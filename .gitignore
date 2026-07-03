@@ -1,0 +1,17 @@
+# Devenv
+.devenv*
+devenv.local.nix
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Claude
+.claude/
+
+# per-machine sandbox config and shell history
+.sandbox.cfg
+.zsh_history
+
+# nix-build output
+result
