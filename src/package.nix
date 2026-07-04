@@ -20,6 +20,9 @@
 # repo with this same recipe (see the README's consuming section). It cannot
 # be named plain `src`: callPackage would silently fill that argument from the
 # nixpkgs top-level `src` alias attribute instead of using the `./.` default.
+# The `./.` default resolves relative to this file, i.e. to the src/ directory
+# itself — so the phases below reference sandbox.sh and seccomp-gen.c without
+# a src/ prefix, and consumers must not pass the repo root as sandboxSrc.
 {
   lib,
   stdenv,
@@ -44,7 +47,7 @@ stdenv.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
-    cc src/seccomp-gen.c -lseccomp -o gen
+    cc seccomp-gen.c -lseccomp -o gen
     ./gen default > default.bpf
     ./gen allow-userns > allow-userns.bpf
     runHook postBuild
@@ -52,14 +55,14 @@ stdenv.mkDerivation {
 
   checkPhase = ''
     runHook preCheck
-    shellcheck src/sandbox.sh
+    shellcheck sandbox.sh
     runHook postCheck
   '';
 
   installPhase = ''
     runHook preInstall
     install -Dm444 -t $out/share/sandbox default.bpf allow-userns.bpf
-    install -Dm755 src/sandbox.sh $out/bin/sandbox
+    install -Dm755 sandbox.sh $out/bin/sandbox
     substituteInPlace $out/bin/sandbox \
       --replace-fail '@sandboxSeccompDir@' "$out/share/sandbox"
     wrapProgram $out/bin/sandbox \

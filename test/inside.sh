@@ -3,7 +3,7 @@
 # the loaded .sandbox.cfg is actually enforced — binds, tmpfs, hide-by-omission,
 # net, and the seccomp profile. From a project directory containing this repo:
 #
-#   sandbox -- bash test/enforce.sh
+#   sandbox -- bash test/inside.sh
 #
 # (invoke via `bash`: /usr/bin/env does not exist inside the sandbox, so the
 # shebang cannot be resolved there)

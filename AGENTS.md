@@ -22,7 +22,8 @@ that doesn't belong in the user-facing README. Pending work lives in
 | `src/package.nix` | `stdenv.mkDerivation` recipe: compiles the generator, runs it, installs `sandbox.sh` with `@sandboxSeccompDir@` substituted, wraps PATH (bwrap/coreutils/zsh), shellchecks in `checkPhase`. |
 | `default.nix` | `callPackage ./src/package.nix { }` for classic `nix-build` (repo root). |
 | `flake.nix` | Exposes `packages.<system>.default` (repo root). |
-| `test/enforce.sh` | In-sandbox enforcement checks; not installed by the package. |
+| `test/inside.sh` | In-sandbox enforcement checks; not installed by the package. |
+| `test/outside.sh` | Cfg matrix driver: generates dummy dirs/cfgs, launches sandboxes, runs `inside.sh` in each; must run unsandboxed. |
 
 `src/package.nix` takes `sandboxSrc ? ./.` instead of plain `src` because
 callPackage would fill `src` from the nixpkgs top-level alias. The `./.`
@@ -44,7 +45,10 @@ statix check && deadnix .
 
 # Runtime enforcement, from inside a sandbox (invoke via `bash`:
 # /usr/bin/env does not exist inside, so the shebang can't resolve):
-sandbox -- bash test/enforce.sh
+sandbox -- bash test/inside.sh
+
+# Cfg matrix, from an unsandboxed shell (nested bwrap is blocked inside):
+bash test/outside.sh
 ```
 
 ## seccomp design
@@ -127,7 +131,7 @@ blocking is validated only on those arches.
 `boot.kernel.sysctl."dev.tty.legacy_tiocsti" = 0;`) disables the legacy
 TIOCSTI ioctl host-wide on kernel ≥ 6.2. Belt-and-suspenders with the
 seccomp rule: the sysctl protects the whole host, the seccomp rule protects
-the sandbox even on a host that lacks the sysctl. `test/enforce.sh`
+the sandbox even on a host that lacks the sysctl. `test/inside.sh`
 distinguishes the two layers by errno (seccomp EPERM vs sysctl EIO).
 
 ## Not done / future hardening

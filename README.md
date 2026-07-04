@@ -105,12 +105,23 @@ Versions are published as GitHub releases, so update checkers can read
 
 ## Verifying
 
-`test/enforce.sh` checks a live sandbox from the inside: binds, tmpfs,
+`test/inside.sh` checks a live sandbox from the inside: binds, tmpfs,
 hide-by-omission, network, and the seccomp profile (including TIOCSTI and
 `keyctl` probes). Run it from this repo:
 
 ```sh
-sandbox -- bash test/enforce.sh
+sandbox -- bash test/inside.sh
 ```
 
 Exit 0 means the loaded cfg is enforced as declared.
+
+`test/outside.sh` covers the cfg matrix from the outside: it generates dummy
+project directories with various `.sandbox.cfg` files (net isolation, seccomp
+variants, env inherit/replace, links, extra binds, `pre`/`post` hooks, and
+the refusal paths), launches a sandbox on each, and runs `inside.sh` inside.
+It must run from an unsandboxed shell — the default seccomp profile blocks
+the nested user namespaces bwrap needs:
+
+```sh
+bash test/outside.sh
+```
