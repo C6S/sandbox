@@ -95,6 +95,8 @@ ro=(
   /etc/localtime
 )
 rw=()
+bind=()
+mask=()
 link=()
 env=( inherit )
 pre=()
@@ -163,6 +165,27 @@ done
 for mount in "${rw[@]}"; do
 	log "RW: $mount" 7
   args+=( --bind "$mount" "$mount" )
+done
+
+for (( i=0; i<${#bind[@]}; i+=2 )); do
+	log "BIND: ${bind[i]} -> ${bind[i+1]}" 7
+  args+=( --bind "${bind[i]}" "${bind[i+1]}" )
+done
+
+# Masks shadow whatever the binds above exposed (later mounts win in bwrap):
+# directories get an empty tmpfs, files a read-only /dev/null bind — the same
+# mechanism systemd uses for masking. Dir-vs-file is decided by what the path
+# is on the host; paths absent on the host are already hidden by omission.
+for mount in "${mask[@]}"; do
+  if [[ -d "$mount" ]]; then
+	  log "MASK (tmpfs): $mount" 7
+    args+=( --tmpfs "$mount" )
+  elif [[ -e "$mount" ]]; then
+	  log "MASK (/dev/null): $mount" 7
+    args+=( --ro-bind /dev/null "$mount" )
+  else
+	  log "MASK: $mount absent on host, hidden by omission" 6
+  fi
 done
 
 for (( i=0; i<${#link[@]}; i+=2 )); do

@@ -44,9 +44,9 @@ fi
 # feed the build.
 if [[ "$SANDBOX_BIN" == "$REPO/result/bin/sandbox" ]]; then
   built="$(stat -c %Y "$REPO/result")"
-  for f in "$REPO"/src/sandbox.sh "$REPO"/src/seccomp-gen.c "$REPO"/src/package.nix; do
-    if [[ "$(stat -c %Y "$f")" -gt "$built" ]]; then
-      echo "stale build: ${f#"$REPO"/} is newer than ./result - run nix build first (or set SANDBOX_BIN)" >&2
+  for file in "$REPO"/src/sandbox.sh "$REPO"/src/seccomp-gen.c "$REPO"/src/package.nix; do
+    if [[ "$(stat -c %Y "$file")" -gt "$built" ]]; then
+      echo "stale build: ${file#"$REPO"/} is newer than ./result - run nix build first (or set SANDBOX_BIN)" >&2
       exit 2
     fi
   done
@@ -183,6 +183,49 @@ if [[ "$(cat "$root/shared-rw/probe" 2>/dev/null)" == from-inside ]]; then
   pass "binds: rw write visible outside"
 else
   fail "binds: rw write not visible outside"
+fi
+
+## bind pairs: host src mounted at a different path inside, writes reach the host
+mkdir -p "$root/bind-src"
+echo bind-data >"$root/bind-src/file"
+fixture bind-pairs <<EOF
+rw+=( "\$DIR" )
+bind+=( "$root/bind-src" /var/bind-dest )
+EOF
+check "bind-pairs: inside.sh passes" bind-pairs
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "bind-pairs: src content visible at dest" bind-pairs \
+  bash -c '[[ "$(cat /var/bind-dest/file)" == bind-data ]]'
+check "bind-pairs: dest is writable" bind-pairs \
+  bash -c 'echo from-inside >/var/bind-dest/probe'
+if [[ "$(cat "$root/bind-src/probe" 2>/dev/null)" == from-inside ]]; then
+  pass "bind-pairs: dest write visible at host src"
+else
+  fail "bind-pairs: dest write not visible at host src"
+fi
+
+## masks: secrets under an rw bind are hidden, host copies stay intact
+fixture masks <<'EOF'
+rw+=( "$DIR" )
+mask+=(
+  "$DIR/secret-dir"
+  "$DIR/secret-file"
+  "$DIR/never-existed"
+)
+EOF
+mkdir -p "$root/masks/secret-dir"
+echo top-secret >"$root/masks/secret-dir/inner"
+echo top-secret >"$root/masks/secret-file"
+check "masks: inside.sh passes" masks
+check "masks: dir content hidden" masks \
+  bash -c "[[ ! -e $root/masks/secret-dir/inner ]]"
+check "masks: file reads empty" masks \
+  bash -c "[[ -z \$(cat $root/masks/secret-file) ]]"
+if [[ "$(cat "$root/masks/secret-dir/inner" 2>/dev/null)" == top-secret && \
+      "$(cat "$root/masks/secret-file" 2>/dev/null)" == top-secret ]]; then
+  pass "masks: host copies intact"
+else
+  fail "masks: host copies damaged"
 fi
 
 ## pre/post hooks run outside, exit code passes through

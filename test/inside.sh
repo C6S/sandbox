@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # In-sandbox enforcement checks: run this *inside* a sandbox to validate that
-# the loaded .sandbox.cfg is actually enforced — binds, tmpfs, hide-by-omission,
-# net, and the seccomp profile. From a project directory containing this repo:
+# the loaded .sandbox.cfg is actually enforced — binds, tmpfs, masks,
+# hide-by-omission, net, and the seccomp profile. From a project directory containing this repo:
 #
 #   sandbox -- bash test/inside.sh
 #
@@ -28,7 +28,7 @@ fi
 # shellcheck disable=SC2034
 DIR="${SANDBOX%/.sandbox.cfg}"
 # shellcheck disable=SC2034
-tmpfs=() ro=() rw=() link=() env=( inherit ) pre=() post=()
+tmpfs=() ro=() rw=() bind=() mask=() link=() env=( inherit ) pre=() post=()
 net=1
 seccomp=default
 # shellcheck disable=SC1090
@@ -39,64 +39,100 @@ fstype() { stat -f -c %T "$1" 2>/dev/null; }
 # Probe write access by creating and removing a file; meaningful only for
 # directories the current user could write to were they not read-only.
 can_write() {
-  local f="$1/.sandbox-enforce-probe.$$"
-  if ( : >"$f" ) 2>/dev/null; then
-    rm -f "$f"
+  local file="$1/.sandbox-enforce-probe.$$"
+  if ( : >"$file" ) 2>/dev/null; then
+    rm -f "$file"
     return 0
   fi
   return 1
 }
 
 is_bound() {
-  local p
-  for p in "${ro[@]}" "${rw[@]}" "${tmpfs[@]}"; do
-    [[ "$1" == "$p" || "$1" == "$p"/* ]] && return 0
+  local path i
+  for path in "${ro[@]}" "${rw[@]}" "${tmpfs[@]}"; do
+    [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
+  done
+  for (( i = 1; i < ${#bind[@]}; i += 2 )); do
+    [[ "$1" == "${bind[i]}" || "$1" == "${bind[i]}"/* ]] && return 0
   done
   return 1
 }
 
 ## Base invariants
-for p in "$HOME" /tmp; do
-  if [[ "$(fstype "$p")" == tmpfs ]]; then
-    ok "$p is tmpfs"
+for path in "$HOME" /tmp; do
+  if [[ "$(fstype "$path")" == tmpfs ]]; then
+    ok "$path is tmpfs"
   else
-    bad "$p is not tmpfs (got: $(fstype "$p"))"
+    bad "$path is not tmpfs (got: $(fstype "$path"))"
   fi
 done
 if [[ -d /nix/store ]]; then ok "/nix/store present"; else bad "/nix/store missing"; fi
 if [[ ! -w "$SANDBOX" ]]; then ok "cfg is read-only"; else bad "cfg is writable"; fi
 
 ## Hide-by-omission: host paths that exist outside must be absent unless bound
-for p in /root /boot /etc/shadow /usr "$HOME/.ssh" "$HOME/.gnupg"; do
-  if is_bound "$p"; then
-    skip "$p is bound by cfg"
-  elif [[ -e "$p" ]]; then
-    bad "$p leaked into the sandbox"
+for path in /root /boot /etc/shadow /usr "$HOME/.ssh" "$HOME/.gnupg"; do
+  if is_bound "$path"; then
+    skip "$path is bound by cfg"
+  elif [[ -e "$path" ]]; then
+    bad "$path leaked into the sandbox"
   else
-    ok "$p absent"
+    ok "$path absent"
   fi
 done
 
 ## Cfg-declared binds
-for p in "${rw[@]}"; do
-  if [[ -d "$p" ]]; then
-    if can_write "$p"; then ok "rw dir writable: $p"; else bad "rw dir not writable: $p"; fi
-  elif [[ -e "$p" ]]; then
-    if [[ -w "$p" ]]; then ok "rw file writable: $p"; else bad "rw file not writable: $p"; fi
+for path in "${rw[@]}"; do
+  if [[ -d "$path" ]]; then
+    if can_write "$path"; then ok "rw dir writable: $path"; else bad "rw dir not writable: $path"; fi
+  elif [[ -e "$path" ]]; then
+    if [[ -w "$path" ]]; then ok "rw file writable: $path"; else bad "rw file not writable: $path"; fi
   else
-    bad "rw path missing: $p"
+    bad "rw path missing: $path"
   fi
 done
 
-for p in "${ro[@]}"; do
-  if [[ -d "$p" ]]; then
+for path in "${ro[@]}"; do
+  if [[ -d "$path" ]]; then
     # Only user-writable-on-host dirs discriminate EROFS from EACCES; root-owned
     # ones fail either way, which is still the correct observable behavior.
-    if can_write "$p"; then bad "ro dir writable: $p"; else ok "ro dir read-only: $p"; fi
-  elif [[ -e "$p" ]]; then
-    if [[ -w "$p" ]]; then bad "ro file writable: $p"; else ok "ro file read-only: $p"; fi
+    if can_write "$path"; then bad "ro dir writable: $path"; else ok "ro dir read-only: $path"; fi
+  elif [[ -e "$path" ]]; then
+    if [[ -w "$path" ]]; then bad "ro file writable: $path"; else ok "ro file read-only: $path"; fi
   else
-    bad "ro path missing: $p"
+    bad "ro path missing: $path"
+  fi
+done
+
+for (( i = 0; i < ${#bind[@]}; i += 2 )); do
+  dest="${bind[i+1]}"
+  if [[ ! -e "$dest" ]]; then
+    bad "bind dest missing: $dest"
+  elif [[ -d "$dest" ]]; then
+    if can_write "$dest"; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
+  else
+    if [[ -w "$dest" ]]; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
+  fi
+done
+
+## Masks: dirs must be an empty tmpfs; files must be /dev/null (reads empty,
+## writes discarded). A missing path was absent on the host - hidden by omission.
+for path in "${mask[@]}"; do
+  if [[ -d "$path" ]]; then
+    if [[ "$(fstype "$path")" == tmpfs && -z "$(ls -A "$path" 2>/dev/null)" ]]; then
+      ok "mask dir is empty tmpfs: $path"
+    else
+      bad "mask dir not masked: $path"
+    fi
+  elif [[ -c "$path" ]]; then
+    if [[ -z "$(cat "$path" 2>/dev/null)" ]]; then
+      ok "mask file reads empty: $path"
+    else
+      bad "mask file has content: $path"
+    fi
+  elif [[ -e "$path" ]]; then
+    bad "mask path not masked: $path"
+  else
+    ok "mask path absent: $path"
   fi
 done
 

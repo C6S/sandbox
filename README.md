@@ -50,11 +50,18 @@ env+=( HISTFILE "$DIR/.zsh_history" )
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
 | `ro` | `/nix`, `/run/current-system`, select `/etc` files | Read-only binds. |
 | `rw` | empty | Read-write binds. |
+| `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
+| `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a read-only `/dev/null`. |
 | `link` | empty | Flat pairs of `target linkpath`: symlinks created inside. |
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
 | `net` | `1` | `--share-net`. `0` isolates the network. |
 | `seccomp` | `default` | Filter to load: `default`, `allow-userns`, or `none`. |
 | `pre` / `post` | empty | Commands eval'd outside the sandbox, before launch / after exit. |
+
+`mask` mounts over paths that would otherwise be visible through an enclosing
+bind — the same mechanism systemd uses for masking. Whether a path gets the
+tmpfs or the `/dev/null` treatment is decided by what it is on the host; a
+path absent on the host is skipped, since it's already hidden by omission.
 
 Appending to `env` keeps the host environment and sets the named variables.
 Replacing the array (dropping the `inherit` sentinel) clears the environment
@@ -117,7 +124,8 @@ Exit 0 means the loaded cfg is enforced as declared.
 
 `test/outside.sh` covers the cfg matrix from the outside: it generates dummy
 project directories with various `.sandbox.cfg` files (net isolation, seccomp
-variants, env inherit/replace, links, extra binds, `pre`/`post` hooks, and
+variants, env inherit/replace, links, extra binds, `bind` pairs, masks,
+`pre`/`post` hooks, and
 the refusal paths), launches a sandbox on each, and runs `inside.sh` inside.
 It must run from an unsandboxed shell — the default seccomp profile blocks
 the nested user namespaces bwrap needs:
