@@ -115,7 +115,8 @@ for (( i = 0; i < ${#bind[@]}; i += 2 )); do
 done
 
 ## Masks: dirs must be an empty tmpfs; files must be /dev/null (reads empty,
-## writes discarded). A missing path was absent on the host - hidden by omission.
+## writes discarded). Masks are emitted even for paths absent on the host,
+## so a path missing inside means the mask was not applied.
 for path in "${mask[@]}"; do
   if [[ -d "$path" ]]; then
     if [[ "$(fstype "$path")" == tmpfs && -z "$(ls -A "$path" 2>/dev/null)" ]]; then
@@ -132,7 +133,7 @@ for path in "${mask[@]}"; do
   elif [[ -e "$path" ]]; then
     bad "mask path not masked: $path"
   else
-    ok "mask path absent: $path"
+    bad "mask path missing: $path"
   fi
 done
 

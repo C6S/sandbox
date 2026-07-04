@@ -51,7 +51,7 @@ env+=( HISTFILE "$DIR/.zsh_history" )
 | `ro` | `/nix`, `/run/current-system`, select `/etc` files | Read-only binds. |
 | `rw` | empty | Read-write binds. |
 | `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
-| `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a read-only `/dev/null`. |
+| `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a read-only `/dev/null`. Masked even if absent on the host. |
 | `link` | empty | Flat pairs of `target linkpath`: symlinks created inside. |
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
 | `net` | `1` | `--share-net`. `0` isolates the network. |
@@ -60,8 +60,14 @@ env+=( HISTFILE "$DIR/.zsh_history" )
 
 `mask` mounts over paths that would otherwise be visible through an enclosing
 bind — the same mechanism systemd uses for masking. Whether a path gets the
-tmpfs or the `/dev/null` treatment is decided by what it is on the host; a
-path absent on the host is skipped, since it's already hidden by omission.
+tmpfs or the `/dev/null` treatment is decided by what it is on the host,
+resolved through the `bind` pairs so masks under a bind dest work. A path
+absent on the host is masked anyway (as `/dev/null`), so a file appearing
+later is already shadowed; bubblewrap creates the missing mountpoint itself,
+which leaves an empty placeholder file on the host when the path sits under
+a `rw` bind, and fails the launch when it sits under a `ro` one.
+
+A missing `ro`, `rw`, or `bind` source path fails the launch.
 
 Appending to `env` keeps the host environment and sets the named variables.
 Replacing the array (dropping the `inherit` sentinel) clears the environment
@@ -100,7 +106,7 @@ there's no flake input and no import-from-derivation:
 ```nix
 let
   src = builtins.fetchTarball {
-    url = "https://github.com/C6S/sandbox/archive/refs/tags/v0.1.0.tar.gz";
+    url = "https://github.com/C6S/sandbox/archive/refs/tags/v0.1.2.tar.gz";
     sha256 = "..."; # set to lib.fakeSha256, build once, copy the real hash
   };
 in

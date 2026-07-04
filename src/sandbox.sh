@@ -174,17 +174,26 @@ done
 
 # Masks shadow whatever the binds above exposed (later mounts win in bwrap):
 # directories get an empty tmpfs, files a read-only /dev/null bind — the same
-# mechanism systemd uses for masking. Dir-vs-file is decided by what the path
-# is on the host; paths absent on the host are already hidden by omission.
+# mechanism systemd uses for masking. A mask is emitted even for paths absent
+# on the host, so a file appearing later is already shadowed; bwrap creates
+# the missing mountpoint itself, which leaves an empty placeholder on the
+# host under a rw bind and fails the launch under a ro one. Dir-vs-file is
+# decided on the host, after translating the path through the bind pairs so
+# masks under a bind dest resolve against the real source.
 for mount in "${mask[@]}"; do
-  if [[ -d "$mount" ]]; then
+  hostpath="$mount"
+  for (( i=0; i<${#bind[@]}; i+=2 )); do
+    if [[ "$mount" == "${bind[i+1]}" || "$mount" == "${bind[i+1]}"/* ]]; then
+      hostpath="${bind[i]}${mount#"${bind[i+1]}"}"
+      break
+    fi
+  done
+  if [[ -d "$hostpath" ]]; then
 	  log "MASK (tmpfs): $mount" 7
     args+=( --tmpfs "$mount" )
-  elif [[ -e "$mount" ]]; then
+  else
 	  log "MASK (/dev/null): $mount" 7
     args+=( --ro-bind /dev/null "$mount" )
-  else
-	  log "MASK: $mount absent on host, hidden by omission" 6
   fi
 done
 

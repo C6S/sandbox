@@ -221,12 +221,41 @@ check "masks: dir content hidden" masks \
   bash -c "[[ ! -e $root/masks/secret-dir/inner ]]"
 check "masks: file reads empty" masks \
   bash -c "[[ -z \$(cat $root/masks/secret-file) ]]"
+check "masks: absent path masked as /dev/null" masks \
+  bash -c "[[ -c $root/masks/never-existed ]]"
 if [[ "$(cat "$root/masks/secret-dir/inner" 2>/dev/null)" == top-secret && \
       "$(cat "$root/masks/secret-file" 2>/dev/null)" == top-secret ]]; then
   pass "masks: host copies intact"
 else
   fail "masks: host copies damaged"
 fi
+# bwrap creates the mountpoint for an absent mask through the rw bind: an
+# empty regular file must remain on the host afterwards.
+if [[ -f "$root/masks/never-existed" && ! -s "$root/masks/never-existed" ]]; then
+  pass "masks: placeholder left on host"
+else
+  fail "masks: placeholder missing on host"
+fi
+
+## masks under a bind dest: dir-vs-file resolved against the bind source
+mkdir -p "$root/bind-mask-src/secret-dir"
+echo top-secret >"$root/bind-mask-src/secret-dir/inner"
+echo top-secret >"$root/bind-mask-src/secret-file"
+fixture bind-mask <<EOF
+rw+=( "\$DIR" )
+bind+=( "$root/bind-mask-src" /var/bind-mask )
+mask+=(
+  /var/bind-mask/secret-dir
+  /var/bind-mask/secret-file
+)
+EOF
+check "bind-mask: inside.sh passes" bind-mask
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "bind-mask: dir masked as tmpfs at dest" bind-mask \
+  bash -c '[[ -d /var/bind-mask/secret-dir && ! -e /var/bind-mask/secret-dir/inner ]]'
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "bind-mask: file reads empty at dest" bind-mask \
+  bash -c '[[ -c /var/bind-mask/secret-file && -z "$(cat /var/bind-mask/secret-file)" ]]'
 
 ## pre/post hooks run outside, exit code passes through
 fixture hooks <<'EOF'
