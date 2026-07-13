@@ -71,20 +71,33 @@ done
 
 log "DIR=$DIR"
 
-# config variables (inherits)
+# Config variables: global defaults come from default.cfg under the XDG
+# config dir, created with the stock policy on first run; the project cfg
+# is sourced on top and appends to or overrides them. Declared empty here
+# only so set -u (and shellcheck) survive a default.cfg that drops entries —
+# the policy itself lives in the cfgs.
+args=()
+tmpfs=() ro=() rw=() bind=() overlay=() mask=() link=() env=( inherit )
+pre=() post=()
+net=1
+seccomp=default
+DEFAULT_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/default.cfg"
+if [[ ! -f "$DEFAULT_CFG" ]]; then
+  log "CREATING: $DEFAULT_CFG" 6
+  mkdir -p "${DEFAULT_CFG%/*}"
+  cat >"$DEFAULT_CFG" <<'EOF'
 args=(
   --proc /proc
   --dev /dev
   --unshare-all
   --die-with-parent
-
 )
 tmpfs=(
   /tmp
   "$HOME"
 )
 ro=(
-	/nix
+  /nix
   /etc/static
   /etc/passwd
   /etc/group
@@ -103,6 +116,11 @@ pre=()
 post=()
 net=1
 seccomp=default
+EOF
+fi
+log "SOURCE: $DEFAULT_CFG" 6
+# shellcheck disable=SC1090
+source "$DEFAULT_CFG"
 
 log "SOURCE: $CFG" 6
 # shellcheck disable=SC1090

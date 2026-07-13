@@ -45,10 +45,15 @@ ro+=( "$HOME/.config/git" )
 env+=( HISTFILE "$DIR/.zsh_history" )
 ```
 
+The defaults below live in `$XDG_CONFIG_HOME/sandbox/default.cfg`
+(`~/.config/sandbox/default.cfg` when `XDG_CONFIG_HOME` is unset), created
+with the stock policy on first run. Edit it to change your global baseline;
+the project `.sandbox.cfg` is sourced on top of it.
+
 | Var | Default | Meaning |
 |---|---|---|
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
-| `ro` | `/nix`, `/run/current-system`, select `/etc` files | Read-only binds. |
+| `ro` | `/nix`, select `/etc` files | Read-only binds. |
 | `rw` | empty | Read-write binds. |
 | `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
 | `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |

@@ -55,6 +55,11 @@ fi
 root="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-cfgs.XXXXXX")"
 trap 'rm -rf "$root"' EXIT
 
+# Keep the run hermetic: point XDG at a test-owned dir so the wrapper
+# auto-creates (and the fixtures use) a fresh stock default.cfg instead of
+# whatever the host has configured.
+export XDG_CONFIG_HOME="$root/xdg"
+
 # fixture <name> reads the cfg body from stdin and creates $root/<name>
 # containing it plus a copy of inside.sh. Heredocs are unquoted on purpose
 # where a driver path must be baked in literally; $DIR/$HOME stay escaped so
@@ -109,6 +114,11 @@ check "defaults: inside.sh passes" defaults
 # shellcheck disable=SC2016 # expansion happens inside the sandbox
 check "defaults: env inherited (canary visible)" defaults \
   bash -c '[[ "${SANDBOX_CFGTEST_CANARY:-}" == yes ]]'
+if [[ -f "$XDG_CONFIG_HOME/sandbox/default.cfg" ]]; then
+  pass "defaults: default.cfg auto-created"
+else
+  fail "defaults: default.cfg not created"
+fi
 
 ## ro project: $DIR bound read-only instead of rw
 fixture ro-project <<'EOF'
