@@ -314,6 +314,25 @@ else
   fail "pre-fails: command ran despite failing pre"
 fi
 
+## show modes: print without launching; --show-config output re-sources
+if out="$("$SANDBOX_BIN" --show-config "$root/defaults")" \
+   && grep -q '^tmpfs=(' <<<"$out" && bash -c "source <(printf '%s' \"\$1\")" _ "$out"; then
+  pass "show-config: prints sourceable policy"
+else
+  fail "show-config: broken output"
+fi
+if "$SANDBOX_BIN" --show-config-'#' "$root/defaults" | grep -q '^# net='; then
+  pass "show-config-#: output commented"
+else
+  fail "show-config-#: output not commented"
+fi
+if out="$("$SANDBOX_BIN" --show-command "$root/defaults" -- true)" \
+   && grep -q -- '--unshare-all' <<<"$out" && [[ "$out" == "bwrap "*" -- true" ]]; then
+  pass "show-command: prints bwrap invocation"
+else
+  fail "show-command: broken output"
+fi
+
 ## unknown seccomp filter name refuses to launch
 fixture bad-seccomp <<'EOF'
 rw+=( "$DIR" )

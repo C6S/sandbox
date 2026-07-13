@@ -14,12 +14,18 @@ SECCOMP_DIR="@sandboxSeccompDir@"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [dir] [-- command [args...]]
+Usage: $(basename "$0") [option] [dir] [-- command [args...]]
        $(basename "$0") --help
 
   dir   Directory to sandbox into (default: current directory)
   --    Separator before the command to run inside the sandbox
         Without --, opens \$SHELL inside the sandbox
+
+Options:
+  --show-config    print the resolved config (all layers applied) and exit
+  --show-config-#  same, but #-prefixed, e.g. to document the inherited
+                   policy: $(basename "$0") --show-config-# >> .sandbox.cfg
+  --show-command   print the bwrap command that would run, without running it
 
 Examples:
   $(basename "$0")                     open shell in current directory
@@ -39,22 +45,35 @@ log() {
 	fi
 }
 
-# Parse optional leading dir arg
-if [[ $# -ge 1 && "$1" != "--" ]]; then
-  if [[ "$1" == "--help" ]]; then
-    usage
-    exit 0
-  elif [[ -d "$1" ]]; then
-    DIR="$(readlink -f "$1")"
-    cd "$DIR" || { echo "Cannot enter directory: $DIR" >&2; exit 1; }
-  else
-    log "Not a directory: $1" 3
-    exit 1
-  fi
+# Parse leading args: an optional mode flag and an optional dir, in any
+# order, up to the -- separator.
+DIR="$PWD"
+MODE=run
+while [[ $# -ge 1 && "$1" != "--" ]]; do
+  case "$1" in
+    --help)
+      usage
+      exit 0
+      ;;
+    --show-config)    MODE=show-config ;;
+    --show-config-\#) MODE=show-config-commented ;;
+    --show-command)   MODE=show-command ;;
+    -*)
+      log "Unknown option: $1" 3
+      exit 1
+      ;;
+    *)
+      if [[ -d "$1" ]]; then
+        DIR="$(readlink -f "$1")"
+        cd "$DIR" || { echo "Cannot enter directory: $DIR" >&2; exit 1; }
+      else
+        log "Not a directory: $1" 3
+        exit 1
+      fi
+      ;;
+  esac
   shift
-else
-	DIR="$PWD"
-fi
+done
 
 # find config: walk up from PWD to the closest .sandbox.cfg
 while :; do
@@ -132,6 +151,54 @@ normalize overlay
 normalize mask
 normalize link 1 2
 
+# --show-config[-#]: print the resolved (layered, normalized) policy as
+# sourceable cfg syntax and exit. Pair arrays print two elements per line.
+if [[ "$MODE" == show-config* ]]; then
+  comment=""
+  [[ "$MODE" == show-config-commented ]] && comment="# "
+  show_array() {
+    local -n elements="$1"
+    local per_line="$2" i
+    if (( ${#elements[@]} == 0 )); then
+      printf '%s%s=()\n' "$comment" "$1"
+      return
+    fi
+    printf '%s%s=(\n' "$comment" "$1"
+    for (( i=0; i<${#elements[@]}; i+=per_line )); do
+      printf '%s ' "$comment"
+      printf ' %q' "${elements[@]:i:per_line}"
+      printf '\n'
+    done
+    printf '%s)\n' "$comment"
+  }
+  show_array args 2
+  show_array tmpfs 1
+  show_array ro 1
+  show_array rw 1
+  show_array bind 2
+  show_array overlay 2
+  show_array mask 1
+  show_array link 2
+  # env may lead with the lone "inherit" sentinel; keep it on its own line
+  # so the NAME-value pairs after it stay aligned
+  if [[ "${env[0]:-}" == "inherit" ]]; then
+    printf '%senv=(\n%s  inherit\n' "$comment" "$comment"
+    for (( i=1; i<${#env[@]}; i+=2 )); do
+      printf '%s ' "$comment"
+      printf ' %q' "${env[@]:i:2}"
+      printf '\n'
+    done
+    printf '%s)\n' "$comment"
+  else
+    show_array env 2
+  fi
+  show_array pre 1
+  show_array post 1
+  printf '%snet=%q\n' "$comment" "$net"
+  printf '%sseccomp=%q\n' "$comment" "$seccomp"
+  exit 0
+fi
+
 if [[ "$net" == "1" ]]; then
 	log "NET: ENABLED" 6
   args+=( --share-net )
@@ -206,7 +273,9 @@ for (( i=0; i<${#overlay[@]}; i+=2 )); do
   path="${overlay[i]}"
   store="${overlay[i+1]%/}"
 	log "OVERLAY: $path -> $store" 7
-  mkdir -p "$store" "$store.work"
+  if [[ "$MODE" == "run" ]]; then
+    mkdir -p "$store" "$store.work"
+  fi
   args+=( --overlay-src "$path" --overlay "$store" "$store.work" "$path" )
 done
 
@@ -250,6 +319,14 @@ args+=( --setenv SANDBOX "$CFG" )
 
 [[ $# -ge 1 && "$1" == "--" ]] && shift
 [[ $# -ge 1 ]] || set -- "${SHELL:-zsh}"
+
+# --show-command: print the fully assembled bwrap invocation instead of
+# running it. pre/post hooks are skipped — nothing is executed.
+if [[ "$MODE" == "show-command" ]]; then
+  cmd="$(printf '%q ' bwrap "${args[@]}" -- "$@")"
+  printf '%s\n' "${cmd% }"
+  exit 0
+fi
 
 # pre/post hooks from the cfg: eval'd here (outside the sandbox), with $DIR
 # and $CFG in scope. A failing pre command aborts the launch (set -e).

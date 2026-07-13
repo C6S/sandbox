@@ -30,6 +30,13 @@ sandbox subdir/ -- cmd args  run cmd sandboxed in subdir
 logging. `LOGLEVEL=6` shows the resolved decisions, `LOGLEVEL=7` every bind
 and the final bwrap command.
 
+Three flags inspect instead of launching (nothing runs, not even `pre`
+hooks): `--show-config` prints the resolved policy — all layers applied —
+as sourceable cfg syntax; `--show-config-#` prints the same `#`-prefixed,
+handy for documenting the inherited baseline in a project cfg
+(`sandbox --show-config-# >> .sandbox.cfg`); `--show-command` prints the
+bwrap invocation that would run.
+
 ## Configuration
 
 The wrapper walks up from the working directory to the nearest
