@@ -234,6 +234,26 @@ else
   fail "ro-pairs: write leaked into the host src"
 fi
 
+## devices: a dev entry passes a usable device node through, where the same
+## node behind a plain rw bind is mounted nodev and refuses to open. /dev/zero
+## stands in for /dev/kvm — always present, world-readable, and its content is
+## self-evident. Both land at fresh dests so bwrap's own /dev/zero can't be
+## what answers.
+fixture devices <<'EOF'
+rw+=( "$DIR" /dev/zero:/var/rw-zero )
+dev+=( /dev/zero:/var/dev-zero )
+EOF
+check "devices: inside.sh passes" devices
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "devices: dev dest is a char device" devices \
+  bash -c '[[ -c /var/dev-zero ]]'
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "devices: dev dest reads as the real device" devices \
+  bash -c '[[ "$(head -c3 /var/dev-zero | tr -d "\0" | wc -c)" == 0 ]]'
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check_fails "devices: same node via rw bind is unopenable (nodev)" devices \
+  bash -c ': </var/rw-zero'
+
 ## escaped colons: \: is a literal colon in a path, not a pair separator
 mkdir -p "$root/co:lon"
 echo colon-data >"$root/co:lon/file"

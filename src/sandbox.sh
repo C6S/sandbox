@@ -101,6 +101,7 @@ args=()
 tmpfs=()
 ro=()
 rw=()
+dev=()
 overlay=()
 mask=()
 link=()
@@ -144,7 +145,7 @@ normalize() {
 normalize tmpfs
 normalize mask
 
-# ro/rw entries are either a single path (mounted at the same path inside)
+# ro/rw/dev entries are either a single path (mounted at the same path inside)
 # or a SRC:DEST pair splitting on the first colon (host SRC appears at DEST
 # inside); overlay and link entries are always pairs (PATH:STORE and
 # TARGET:LINKPATH). A literal colon in a path is written \: — effective
@@ -176,6 +177,7 @@ normalize_mounts() {
 }
 normalize_mounts ro
 normalize_mounts rw
+normalize_mounts dev
 normalize_mounts overlay
 
 # link targets stay literal (they may be deliberately dangling or relative);
@@ -210,6 +212,7 @@ if [[ "$MODE" == show-config* ]]; then
   show_array tmpfs 1
   show_array ro 1
   show_array rw 1
+  show_array dev 1
   show_array overlay 1
   show_array mask 1
   show_array link 1
@@ -294,6 +297,21 @@ for mount in "${rw[@]}"; do
   split_mount "$mount"
 	log "RW: $src -> $dest" 7
   args+=( --bind "$src" "$dest" )
+done
+
+# Device passthrough (/dev/kvm, /dev/dri/*, ...). The ro/rw binds above are
+# mounted nodev by unprivileged bwrap, so a device node bound through them
+# exists but every open() of it returns EACCES — same trap the /dev/null
+# masks below sidestep. --dev-bind is bwrap's only opt-out, and since it
+# drops nodev for that mount, exposing a device is a policy decision the cfg
+# has to state outright rather than something an rw entry infers from the
+# inode type. Writable: KVM is driven by ioctls on a rw fd, and bwrap has no
+# --ro-dev-bind. Entries land after rw so a device can be handed through a
+# path an rw bind covers, and before the masks so a mask still shadows it.
+for mount in "${dev[@]}"; do
+  split_mount "$mount"
+	log "DEV: $src -> $dest" 7
+  args+=( --dev-bind "$src" "$dest" )
 done
 
 # Overlays act like rw binds that divert writes: the host path becomes the

@@ -30,7 +30,7 @@ fi
 # shellcheck disable=SC2034
 DIR="${SANDBOX%/.sandbox.cfg}"
 # shellcheck disable=SC2034
-tmpfs=() ro=() rw=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
+tmpfs=() ro=() rw=() dev=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
 net=1
 seccomp=default
 if [[ -f "$DIR/resolved.cfg" ]]; then
@@ -129,6 +129,19 @@ for path in "${ro[@]}"; do
     if [[ -w "$path" ]]; then bad "ro file writable: $path"; else ok "ro file read-only: $path"; fi
   else
     bad "ro path missing: $path"
+  fi
+done
+
+# A dev entry has to arrive as a device node that actually opens: a plain bind
+# would still produce the node, so only opening it proves nodev was dropped.
+for path in "${dev[@]}"; do
+  path="$(dest_of "$path")"
+  if [[ ! -c "$path" && ! -b "$path" ]]; then
+    bad "dev not a device node: $path"
+  elif ( : <"$path" ) 2>/dev/null; then
+    ok "dev openable: $path"
+  else
+    bad "dev present but unopenable (nodev?): $path"
   fi
 done
 

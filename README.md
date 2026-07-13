@@ -70,6 +70,7 @@ The table shows the stock defaults.
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
 | `ro` | select `/etc` files; with a nix store also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
 | `rw` | empty | Read-write binds. |
+| `dev` | empty | Device nodes passed through read-write (`/dev/kvm`, `/dev/dri/*`). Ordinary binds cannot carry a usable device. |
 | `overlay` | empty | `path:store` pairs: `path` acts read-write inside, but writes land in host `store` instead of `path`. |
 | `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a `/dev/null` bind (writes are swallowed). Masked even if absent on the host. |
 | `link` | empty | `target:linkpath` pairs: symlinks created inside. |
@@ -78,13 +79,22 @@ The table shows the stock defaults.
 | `seccomp` | `default` | Filter to load: `default`, `allow-userns`, or `none`. |
 | `pre` / `post` | empty | Commands eval'd outside the sandbox, before launch / after exit. |
 
-An `ro`/`rw` entry is normally a single path, mounted at the same path
+An `ro`/`rw`/`dev` entry is normally a single path, mounted at the same path
 inside. Writing it as `src:dest` (split on the first colon) mounts host
 `src` at `dest` inside instead — e.g.
 `ro+=( "$HOME/.config/foo:/etc/foo" )`. `overlay` and `link` entries use
 the same `a:b` syntax, always as pairs. A literal colon in a path is
 escaped as `\:`; the entry must be quoted, since bash strips the
 backslash from unquoted words before the cfg value is seen.
+
+`dev` exists because bubblewrap mounts an unprivileged bind `nodev`: a device
+node listed in `ro`/`rw` shows up inside, but opening it returns `EACCES`.
+Entries here are bound with the `nodev` flag dropped, which is why device
+passthrough is its own array rather than something `rw` infers from the inode
+— it is a policy decision the cfg should state outright. Devices are handed
+through read-write (KVM is driven by `ioctl` on a writable fd). A `dev` entry
+also needs the host-side permissions to match: `/dev/kvm` is typically
+`root:kvm 0660`, so the user must be in the `kvm` group.
 
 `mask` mounts over paths that would otherwise be visible through an enclosing
 bind — the same mechanism systemd uses for masking. Whether a path gets the
@@ -103,7 +113,7 @@ state persists across launches. `store` is created on demand, along with the
 `<store>.work` scratch directory overlayfs requires on the same filesystem.
 Unprivileged overlayfs needs kernel ≥ 5.11.
 
-A missing `ro`, `rw`, or `overlay` source path fails the launch.
+A missing `ro`, `rw`, `dev`, or `overlay` source path fails the launch.
 
 Appending to `env` keeps the host environment and sets the named variables.
 Replacing the array (dropping the `inherit` sentinel) clears the environment
