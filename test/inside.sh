@@ -47,12 +47,19 @@ can_write() {
   return 1
 }
 
-# ro/rw entries may be SRC:DEST pairs; only the dest exists inside, and for
-# plain entries the #*: strip leaves the path unchanged.
+# ro/rw entries may be SRC:DEST pairs (\: escapes a literal colon); only
+# the dest exists inside. For plain entries the split leaves the path
+# unchanged.
+dest_of() {
+  local entry="${1//\\:/$'\x01'}"
+  entry="${entry#*:}"
+  printf '%s' "${entry//$'\x01'/:}"
+}
+
 is_bound() {
   local path i
   for path in "${ro[@]}" "${rw[@]}" "${tmpfs[@]}"; do
-    path="${path#*:}"
+    path="$(dest_of "$path")"
     [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
   done
   for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
@@ -85,7 +92,7 @@ done
 
 ## Cfg-declared binds
 for path in "${rw[@]}"; do
-  path="${path#*:}"
+  path="$(dest_of "$path")"
   if [[ -d "$path" ]]; then
     if can_write "$path"; then ok "rw dir writable: $path"; else bad "rw dir not writable: $path"; fi
   elif [[ -e "$path" ]]; then
@@ -96,7 +103,7 @@ for path in "${rw[@]}"; do
 done
 
 for path in "${ro[@]}"; do
-  path="${path#*:}"
+  path="$(dest_of "$path")"
   if [[ -d "$path" ]]; then
     # Only user-writable-on-host dirs discriminate EROFS from EACCES; root-owned
     # ones fail either way, which is still the correct observable behavior.

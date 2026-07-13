@@ -230,6 +230,18 @@ else
   fail "ro-pairs: write leaked into the host src"
 fi
 
+## escaped colons: \: is a literal colon in a path, not a pair separator
+mkdir -p "$root/co:lon"
+echo colon-data >"$root/co:lon/file"
+fixture colon-escape <<EOF
+rw+=( "\$DIR" )
+ro+=( "$root/co\:lon:/var/colon-dest" )
+EOF
+check "colon-escape: inside.sh passes" colon-escape
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "colon-escape: escaped src visible at dest" colon-escape \
+  bash -c '[[ "$(cat /var/colon-dest/file)" == colon-data ]]'
+
 ## overlays: reads come from the host path, writes divert to the store dir
 mkdir -p "$root/overlay-lower"
 echo lower-data >"$root/overlay-lower/file"

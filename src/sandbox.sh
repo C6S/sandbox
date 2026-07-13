@@ -149,18 +149,30 @@ normalize link 1 2
 
 # ro/rw entries are either a single path (mounted at the same path inside)
 # or a SRC:DEST pair splitting on the first colon (host SRC appears at DEST
-# inside). Normalize each side separately; paths containing a literal colon
-# aren't representable in pair syntax.
+# inside). A literal colon in a path is written \: — effective only inside
+# quotes, since bash eats the backslash in unquoted words before the cfg
+# value reaches us. Entries stay in escaped form in the arrays (so later
+# splits and --show-config keep working); split_mount decodes one entry
+# into src/dest via a sentinel byte no path can contain. For a plain
+# entry both halves come out identical.
+split_mount() {
+  local entry="${1//\\:/$'\x01'}"
+  src="${entry%%:*}"
+  dest="${entry#*:}"
+  src="${src//$'\x01'/:}"
+  dest="${dest//$'\x01'/:}"
+}
 normalize_mounts() {
   local -n mounts="$1"
   local i src dest
   for (( i=0; i<${#mounts[@]}; i++ )); do
-    src="${mounts[i]%%:*}"
-    dest="${mounts[i]#*:}"
+    split_mount "${mounts[i]}"
+    src="$(realpath -sm -- "$src")"
+    dest="$(realpath -sm -- "$dest")"
     if [[ "$src" == "$dest" ]]; then
-      mounts[i]="$(realpath -sm -- "$src")"
+      mounts[i]="${src//:/\\:}"
     else
-      mounts[i]="$(realpath -sm -- "$src"):$(realpath -sm -- "$dest")"
+      mounts[i]="${src//:/\\:}:${dest//:/\\:}"
     fi
   done
 }
@@ -265,16 +277,16 @@ for mount in "${tmpfs[@]}"; do
   args+=( --tmpfs "$mount" )
 done
 
-# For plain (colon-free) entries, %%:* and #*: both yield the whole string,
-# so src == dest and the same-path mount falls out of the pair handling.
 for mount in "${ro[@]}"; do
-	log "RO: ${mount%%:*} -> ${mount#*:}" 7
-  args+=( --ro-bind "${mount%%:*}" "${mount#*:}" )
+  split_mount "$mount"
+	log "RO: $src -> $dest" 7
+  args+=( --ro-bind "$src" "$dest" )
 done
 
 for mount in "${rw[@]}"; do
-	log "RW: ${mount%%:*} -> ${mount#*:}" 7
-  args+=( --bind "${mount%%:*}" "${mount#*:}" )
+  split_mount "$mount"
+	log "RW: $src -> $dest" 7
+  args+=( --bind "$src" "$dest" )
 done
 
 # Overlays act like rw binds that divert writes: the host path becomes the
@@ -306,8 +318,7 @@ done
 for mount in "${mask[@]}"; do
   hostpath="$mount"
   for entry in "${rw[@]}" "${ro[@]}"; do
-    src="${entry%%:*}"
-    dest="${entry#*:}"
+    split_mount "$entry"
     if [[ "$mount" == "$dest" || "$mount" == "$dest"/* ]]; then
       hostpath="$src${mount#"$dest"}"
       break

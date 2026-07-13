@@ -81,8 +81,9 @@ The table shows the stock defaults.
 An `ro`/`rw` entry is normally a single path, mounted at the same path
 inside. Writing it as `src:dest` (split on the first colon) mounts host
 `src` at `dest` inside instead — e.g.
-`ro+=( "$HOME/.config/foo:/etc/foo" )`. Paths containing a literal colon
-can't be relocated this way.
+`ro+=( "$HOME/.config/foo:/etc/foo" )`. A literal colon in a path is
+escaped as `\:`; the entry must be quoted, since bash strips the
+backslash from unquoted words before the cfg value is seen.
 
 `mask` mounts over paths that would otherwise be visible through an enclosing
 bind — the same mechanism systemd uses for masking. Whether a path gets the
