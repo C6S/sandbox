@@ -28,7 +28,7 @@ fi
 # shellcheck disable=SC2034
 DIR="${SANDBOX%/.sandbox.cfg}"
 # shellcheck disable=SC2034
-tmpfs=() ro=() rw=() bind=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
+tmpfs=() ro=() rw=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
 net=1
 seccomp=default
 # shellcheck disable=SC1090
@@ -47,13 +47,13 @@ can_write() {
   return 1
 }
 
+# ro/rw entries may be SRC:DEST pairs; only the dest exists inside, and for
+# plain entries the #*: strip leaves the path unchanged.
 is_bound() {
   local path i
   for path in "${ro[@]}" "${rw[@]}" "${tmpfs[@]}"; do
+    path="${path#*:}"
     [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
-  done
-  for (( i = 1; i < ${#bind[@]}; i += 2 )); do
-    [[ "$1" == "${bind[i]}" || "$1" == "${bind[i]}"/* ]] && return 0
   done
   for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
     [[ "$1" == "${overlay[i]}" || "$1" == "${overlay[i]}"/* ]] && return 0
@@ -85,6 +85,7 @@ done
 
 ## Cfg-declared binds
 for path in "${rw[@]}"; do
+  path="${path#*:}"
   if [[ -d "$path" ]]; then
     if can_write "$path"; then ok "rw dir writable: $path"; else bad "rw dir not writable: $path"; fi
   elif [[ -e "$path" ]]; then
@@ -95,6 +96,7 @@ for path in "${rw[@]}"; do
 done
 
 for path in "${ro[@]}"; do
+  path="${path#*:}"
   if [[ -d "$path" ]]; then
     # Only user-writable-on-host dirs discriminate EROFS from EACCES; root-owned
     # ones fail either way, which is still the correct observable behavior.
@@ -103,17 +105,6 @@ for path in "${ro[@]}"; do
     if [[ -w "$path" ]]; then bad "ro file writable: $path"; else ok "ro file read-only: $path"; fi
   else
     bad "ro path missing: $path"
-  fi
-done
-
-for (( i = 0; i < ${#bind[@]}; i += 2 )); do
-  dest="${bind[i+1]}"
-  if [[ ! -e "$dest" ]]; then
-    bad "bind dest missing: $dest"
-  elif [[ -d "$dest" ]]; then
-    if can_write "$dest"; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
-  else
-    if [[ -w "$dest" ]]; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
   fi
 done
 

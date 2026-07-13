@@ -58,7 +58,7 @@ trap 'rm -rf "$root"' EXIT
 # Keep the run hermetic: pin the default layer to the repo's stock policy
 # (instead of whatever /etc/sandbox.cfg the host has) and point XDG at a
 # test-owned dir so no per-user default.cfg leaks in.
-export SANDBOX_DEFAULT_CFG="$REPO/src/default.cfg"
+export SANDBOX_CFG_DEFAULT="$REPO/src/default.cfg"
 export XDG_CONFIG_HOME="$root/xdg"
 
 # fixture <name> reads the cfg body from stdin and creates $root/<name>
@@ -191,23 +191,43 @@ else
   fail "binds: rw write not visible outside"
 fi
 
-## bind pairs: host src mounted at a different path inside, writes reach the host
+## rw pairs: host src mounted read-write at a different path inside,
+## writes reach the host
 mkdir -p "$root/bind-src"
 echo bind-data >"$root/bind-src/file"
-fixture bind-pairs <<EOF
-rw+=( "\$DIR" )
-bind+=( "$root/bind-src" /var/bind-dest )
+fixture rw-pairs <<EOF
+rw+=( "\$DIR" "$root/bind-src:/var/bind-dest" )
 EOF
-check "bind-pairs: inside.sh passes" bind-pairs
+check "rw-pairs: inside.sh passes" rw-pairs
 # shellcheck disable=SC2016 # expansion happens inside the sandbox
-check "bind-pairs: src content visible at dest" bind-pairs \
+check "rw-pairs: src content visible at dest" rw-pairs \
   bash -c '[[ "$(cat /var/bind-dest/file)" == bind-data ]]'
-check "bind-pairs: dest is writable" bind-pairs \
+check "rw-pairs: dest is writable" rw-pairs \
   bash -c 'echo from-inside >/var/bind-dest/probe'
 if [[ "$(cat "$root/bind-src/probe" 2>/dev/null)" == from-inside ]]; then
-  pass "bind-pairs: dest write visible at host src"
+  pass "rw-pairs: dest write visible at host src"
 else
-  fail "bind-pairs: dest write not visible at host src"
+  fail "rw-pairs: dest write not visible at host src"
+fi
+
+## ro pairs: same relocation, but writes at the dest are refused
+mkdir -p "$root/ro-pair-src"
+echo ro-data >"$root/ro-pair-src/file"
+fixture ro-pairs <<EOF
+rw+=( "\$DIR" )
+ro+=( "$root/ro-pair-src:/var/ro-dest" )
+EOF
+check "ro-pairs: inside.sh passes" ro-pairs
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "ro-pairs: src content visible at dest" ro-pairs \
+  bash -c '[[ "$(cat /var/ro-dest/file)" == ro-data ]]'
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "ro-pairs: dest refuses writes" ro-pairs \
+  bash -c '! echo from-inside >/var/ro-dest/probe 2>/dev/null'
+if [[ ! -e "$root/ro-pair-src/probe" ]]; then
+  pass "ro-pairs: host src untouched"
+else
+  fail "ro-pairs: write leaked into the host src"
 fi
 
 ## overlays: reads come from the host path, writes divert to the store dir
@@ -256,6 +276,10 @@ check "masks: file reads empty" masks \
   bash -c "[[ -z \$(cat $root/masks/secret-file) ]]"
 check "masks: absent path masked as /dev/null" masks \
   bash -c "[[ -c $root/masks/never-existed ]]"
+# file masks are writable like the tmpfs dir masks: redirects are swallowed
+# by the device instead of failing with EROFS
+check "masks: file swallows writes" masks \
+  bash -c "echo discard >$root/masks/secret-file"
 if [[ "$(cat "$root/masks/secret-dir/inner" 2>/dev/null)" == top-secret && \
       "$(cat "$root/masks/secret-file" 2>/dev/null)" == top-secret ]]; then
   pass "masks: host copies intact"
@@ -270,13 +294,12 @@ else
   fail "masks: placeholder missing on host"
 fi
 
-## masks under a bind dest: dir-vs-file resolved against the bind source
+## masks under a pair dest: dir-vs-file resolved against the pair source
 mkdir -p "$root/bind-mask-src/secret-dir"
 echo top-secret >"$root/bind-mask-src/secret-dir/inner"
 echo top-secret >"$root/bind-mask-src/secret-file"
 fixture bind-mask <<EOF
-rw+=( "\$DIR" )
-bind+=( "$root/bind-mask-src" /var/bind-mask )
+rw+=( "\$DIR" "$root/bind-mask-src:/var/bind-mask" )
 mask+=(
   /var/bind-mask/secret-dir
   /var/bind-mask/secret-file

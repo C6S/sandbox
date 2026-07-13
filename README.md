@@ -57,7 +57,7 @@ env+=( HISTFILE "$DIR/.zsh_history" )
 Configs are sourced in layers, each appending to or overriding the last:
 
 1. the default policy — `/etc/sandbox.cfg` when present, otherwise the stock
-   `default.cfg` shipped with the package (`SANDBOX_DEFAULT_CFG` overrides
+   `default.cfg` shipped with the package (`SANDBOX_CFG_DEFAULT` overrides
    the path outright);
 2. the optional per-user `$XDG_CONFIG_HOME/sandbox/default.cfg`
    (`~/.config/…` when unset);
@@ -70,19 +70,24 @@ The table shows the stock defaults.
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
 | `ro` | select `/etc` files; with a nix store also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
 | `rw` | empty | Read-write binds. |
-| `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
 | `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |
-| `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a read-only `/dev/null`. Masked even if absent on the host. |
+| `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a `/dev/null` bind (writes are swallowed). Masked even if absent on the host. |
 | `link` | empty | Flat pairs of `target linkpath`: symlinks created inside. |
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
 | `net` | `1` | `--share-net`. `0` isolates the network. |
 | `seccomp` | `default` | Filter to load: `default`, `allow-userns`, or `none`. |
 | `pre` / `post` | empty | Commands eval'd outside the sandbox, before launch / after exit. |
 
+An `ro`/`rw` entry is normally a single path, mounted at the same path
+inside. Writing it as `src:dest` (split on the first colon) mounts host
+`src` at `dest` inside instead — e.g.
+`ro+=( "$HOME/.config/foo:/etc/foo" )`. Paths containing a literal colon
+can't be relocated this way.
+
 `mask` mounts over paths that would otherwise be visible through an enclosing
 bind — the same mechanism systemd uses for masking. Whether a path gets the
 tmpfs or the `/dev/null` treatment is decided by what it is on the host,
-resolved through the `bind` pairs so masks under a bind dest work. A path
+resolved through any `src:dest` pairs so masks under a relocated dest work. A path
 absent on the host is masked anyway (as `/dev/null`), so a file appearing
 later is already shadowed; bubblewrap creates the missing mountpoint itself,
 which leaves an empty placeholder file on the host when the path sits under
@@ -96,7 +101,7 @@ state persists across launches. `store` is created on demand, along with the
 `<store>.work` scratch directory overlayfs requires on the same filesystem.
 Unprivileged overlayfs needs kernel ≥ 5.11.
 
-A missing `ro`, `rw`, `bind`, or `overlay` source path fails the launch.
+A missing `ro`, `rw`, or `overlay` source path fails the launch.
 
 Appending to `env` keeps the host environment and sets the named variables.
 Replacing the array (dropping the `inherit` sentinel) clears the environment
@@ -159,7 +164,7 @@ Exit 0 means the loaded cfg is enforced as declared.
 
 `test/outside.sh` covers the cfg matrix from the outside: it generates dummy
 project directories with various `.sandbox.cfg` files (net isolation, seccomp
-variants, env inherit/replace, links, extra binds, `bind` pairs, overlays,
+variants, env inherit/replace, links, extra binds, `src:dest` pairs, overlays,
 masks, `pre`/`post` hooks, and
 the refusal paths), launches a sandbox on each, and runs `inside.sh` inside.
 It must run from an unsandboxed shell — the default seccomp profile blocks

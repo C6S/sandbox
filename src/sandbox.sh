@@ -92,7 +92,7 @@ log "DIR=$DIR"
 
 # Config variables, sourced in layers, each appending to or overriding the
 # previous: the default policy (/etc/sandbox.cfg when present, otherwise the
-# stock default.cfg shipped with the package; SANDBOX_DEFAULT_CFG overrides
+# stock default.cfg shipped with the package; SANDBOX_CFG_DEFAULT overrides
 # the path outright), then the optional per-user default.cfg under XDG,
 # then the project cfg. Declared empty here only so set -u (and shellcheck)
 # survive a default cfg that drops entries — the policy itself lives in the
@@ -101,7 +101,6 @@ args=()
 tmpfs=()
 ro=()
 rw=()
-bind=()
 overlay=()
 mask=()
 link=()
@@ -111,19 +110,19 @@ post=()
 net=1
 seccomp=default
 
-DEFAULT_CFG="${SANDBOX_DEFAULT_CFG:-/etc/sandbox.cfg}"
-if [[ ! -f "$DEFAULT_CFG" ]]; then
-  DEFAULT_CFG="@sandboxDefaultCfg@"
+CFG_DEFAULT="${SANDBOX_CFG_DEFAULT:-/etc/sandbox.cfg}"
+if [[ ! -f "$CFG_DEFAULT" ]]; then
+  CFG_DEFAULT="@sandboxDefaultCfg@"
 fi
-log "SOURCE: $DEFAULT_CFG" 6
+log "SOURCE: $CFG_DEFAULT" 6
 # shellcheck disable=SC1090
-source "$DEFAULT_CFG"
+source "$CFG_DEFAULT"
 
-USER_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/default.cfg"
-if [[ -f "$USER_CFG" ]]; then
-  log "SOURCE: $USER_CFG" 6
+CFG_USER="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/default.cfg"
+if [[ -f "$CFG_USER" ]]; then
+  log "SOURCE: $CFG_USER" 6
   # shellcheck disable=SC1090
-  source "$USER_CFG"
+  source "$CFG_USER"
 fi
 
 log "SOURCE: $CFG" 6
@@ -131,7 +130,7 @@ log "SOURCE: $CFG" 6
 source "$CFG"
 
 # Cfg paths may contain "." or ".." segments (e.g. "$DIR/../shared"), which
-# both bwrap's mountpoint creation and the mask/bind prefix matching below
+# both bwrap's mountpoint creation and the mask prefix matching below
 # take literally. Normalize them lexically (-s: no symlink resolution, so
 # NixOS symlinks like /etc/resolv.conf keep binding the symlink path itself;
 # -m: allow paths that don't exist yet). Symlink targets in link[] stay
@@ -144,12 +143,29 @@ normalize() {
   done
 }
 normalize tmpfs
-normalize ro
-normalize rw
-normalize bind
 normalize overlay
 normalize mask
 normalize link 1 2
+
+# ro/rw entries are either a single path (mounted at the same path inside)
+# or a SRC:DEST pair splitting on the first colon (host SRC appears at DEST
+# inside). Normalize each side separately; paths containing a literal colon
+# aren't representable in pair syntax.
+normalize_mounts() {
+  local -n mounts="$1"
+  local i src dest
+  for (( i=0; i<${#mounts[@]}; i++ )); do
+    src="${mounts[i]%%:*}"
+    dest="${mounts[i]#*:}"
+    if [[ "$src" == "$dest" ]]; then
+      mounts[i]="$(realpath -sm -- "$src")"
+    else
+      mounts[i]="$(realpath -sm -- "$src"):$(realpath -sm -- "$dest")"
+    fi
+  done
+}
+normalize_mounts ro
+normalize_mounts rw
 
 # --show-config[-#]: print the resolved (layered, normalized) policy as
 # sourceable cfg syntax and exit. Pair arrays print two elements per line.
@@ -175,7 +191,6 @@ if [[ "$MODE" == show-config* ]]; then
   show_array tmpfs 1
   show_array ro 1
   show_array rw 1
-  show_array bind 2
   show_array overlay 2
   show_array mask 1
   show_array link 2
@@ -250,19 +265,16 @@ for mount in "${tmpfs[@]}"; do
   args+=( --tmpfs "$mount" )
 done
 
+# For plain (colon-free) entries, %%:* and #*: both yield the whole string,
+# so src == dest and the same-path mount falls out of the pair handling.
 for mount in "${ro[@]}"; do
-	log "RO: $mount" 7
-  args+=( --ro-bind "$mount" "$mount" )
+	log "RO: ${mount%%:*} -> ${mount#*:}" 7
+  args+=( --ro-bind "${mount%%:*}" "${mount#*:}" )
 done
 
 for mount in "${rw[@]}"; do
-	log "RW: $mount" 7
-  args+=( --bind "$mount" "$mount" )
-done
-
-for (( i=0; i<${#bind[@]}; i+=2 )); do
-	log "BIND: ${bind[i]} -> ${bind[i+1]}" 7
-  args+=( --bind "${bind[i]}" "${bind[i+1]}" )
+	log "RW: ${mount%%:*} -> ${mount#*:}" 7
+  args+=( --bind "${mount%%:*}" "${mount#*:}" )
 done
 
 # Overlays act like rw binds that divert writes: the host path becomes the
@@ -282,18 +294,22 @@ for (( i=0; i<${#overlay[@]}; i+=2 )); do
 done
 
 # Masks shadow whatever the binds above exposed (later mounts win in bwrap):
-# directories get an empty tmpfs, files a read-only /dev/null bind — the same
-# mechanism systemd uses for masking. A mask is emitted even for paths absent
+# directories get an empty tmpfs, files a /dev/null bind (writable, so
+# redirects into a masked file are swallowed by the device instead of
+# failing with EROFS) — the same mechanism systemd uses for masking. A
+# mask is emitted even for paths absent
 # on the host, so a file appearing later is already shadowed; bwrap creates
 # the missing mountpoint itself, which leaves an empty placeholder on the
 # host under a rw bind and fails the launch under a ro one. Dir-vs-file is
-# decided on the host, after translating the path through the bind pairs so
-# masks under a bind dest resolve against the real source.
+# decided on the host, after translating the path through any relocating
+# ro/rw pairs so masks under a pair's dest resolve against the real source.
 for mount in "${mask[@]}"; do
   hostpath="$mount"
-  for (( i=0; i<${#bind[@]}; i+=2 )); do
-    if [[ "$mount" == "${bind[i+1]}" || "$mount" == "${bind[i+1]}"/* ]]; then
-      hostpath="${bind[i]}${mount#"${bind[i+1]}"}"
+  for entry in "${rw[@]}" "${ro[@]}"; do
+    src="${entry%%:*}"
+    dest="${entry#*:}"
+    if [[ "$mount" == "$dest" || "$mount" == "$dest"/* ]]; then
+      hostpath="$src${mount#"$dest"}"
       break
     fi
   done
@@ -301,8 +317,8 @@ for mount in "${mask[@]}"; do
 	  log "MASK (tmpfs): $mount" 7
     args+=( --tmpfs "$mount" )
   else
-	  log "MASK (/dev/null): $mount" 7
-    args+=( --ro-bind /dev/null "$mount" )
+	  log "MASK (null): $mount" 7
+    args+=( --bind /dev/null "$mount" )
   fi
 done
 
