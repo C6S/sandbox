@@ -55,16 +55,17 @@ stdenv.mkDerivation {
 
   checkPhase = ''
     runHook preCheck
-    shellcheck sandbox.sh
+    shellcheck sandbox.sh default.cfg
     runHook postCheck
   '';
 
   installPhase = ''
     runHook preInstall
-    install -Dm444 -t $out/share/sandbox default.bpf allow-userns.bpf
+    install -Dm444 -t $out/share/sandbox default.bpf allow-userns.bpf default.cfg
     install -Dm755 sandbox.sh $out/bin/sandbox
     substituteInPlace $out/bin/sandbox \
-      --replace-fail '@sandboxSeccompDir@' "$out/share/sandbox"
+      --replace-fail '@sandboxSeccompDir@' "$out/share/sandbox" \
+      --replace-fail '@sandboxDefaultCfg@' "$out/share/sandbox/default.cfg"
     wrapProgram $out/bin/sandbox \
       --prefix PATH : ${
         lib.makeBinPath [

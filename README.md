@@ -13,9 +13,9 @@ project itself read-write plus whatever else it needs. On top of that, a
 seccomp filter blocks rarely-needed kernel attack surface and the
 TIOCSTI/TIOCLINUX terminal-injection ioctls.
 
-Nix-specific defaults (the `/nix` mounts, `/etc/static`, and a
-`/usr/bin/env` shim from the system profile) apply only when NixOS is
-detected (`/etc/NIXOS` exists).
+Nix-specific defaults (the `/nix` mounts, and where they exist `/etc/static`
+and a `/usr/bin/env` shim from the system profile) apply only when a nix
+store is detected (`/nix/store` exists).
 
 ## Usage
 
@@ -47,15 +47,21 @@ ro+=( "$HOME/.config/git" )
 env+=( HISTFILE "$DIR/.zsh_history" )
 ```
 
-The defaults below live in `$XDG_CONFIG_HOME/sandbox/default.cfg`
-(`~/.config/sandbox/default.cfg` when `XDG_CONFIG_HOME` is unset), created
-with the stock policy on first run. Edit it to change your global baseline;
-the project `.sandbox.cfg` is sourced on top of it.
+Configs are sourced in layers, each appending to or overriding the last:
+
+1. the default policy — `/etc/sandbox.cfg` when present, otherwise the stock
+   `default.cfg` shipped with the package (`SANDBOX_DEFAULT_CFG` overrides
+   the path outright);
+2. the optional per-user `$XDG_CONFIG_HOME/sandbox/default.cfg`
+   (`~/.config/…` when unset);
+3. the project `.sandbox.cfg`.
+
+The table shows the stock defaults.
 
 | Var | Default | Meaning |
 |---|---|---|
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
-| `ro` | select `/etc` files; on NixOS also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
+| `ro` | select `/etc` files; with a nix store also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
 | `rw` | empty | Read-write binds. |
 | `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
 | `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |

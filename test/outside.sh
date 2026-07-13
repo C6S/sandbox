@@ -44,7 +44,7 @@ fi
 # feed the build.
 if [[ "$SANDBOX_BIN" == "$REPO/result/bin/sandbox" ]]; then
   built="$(stat -c %Y "$REPO/result")"
-  for file in "$REPO"/src/sandbox.sh "$REPO"/src/seccomp-gen.c "$REPO"/src/package.nix; do
+  for file in "$REPO"/src/sandbox.sh "$REPO"/src/default.cfg "$REPO"/src/seccomp-gen.c "$REPO"/src/package.nix; do
     if [[ "$(stat -c %Y "$file")" -gt "$built" ]]; then
       echo "stale build: ${file#"$REPO"/} is newer than ./result - run nix build first (or set SANDBOX_BIN)" >&2
       exit 2
@@ -55,9 +55,10 @@ fi
 root="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-cfgs.XXXXXX")"
 trap 'rm -rf "$root"' EXIT
 
-# Keep the run hermetic: point XDG at a test-owned dir so the wrapper
-# auto-creates (and the fixtures use) a fresh stock default.cfg instead of
-# whatever the host has configured.
+# Keep the run hermetic: pin the default layer to the repo's stock policy
+# (instead of whatever /etc/sandbox.cfg the host has) and point XDG at a
+# test-owned dir so no per-user default.cfg leaks in.
+export SANDBOX_DEFAULT_CFG="$REPO/src/default.cfg"
 export XDG_CONFIG_HOME="$root/xdg"
 
 # fixture <name> reads the cfg body from stdin and creates $root/<name>
@@ -114,11 +115,6 @@ check "defaults: inside.sh passes" defaults
 # shellcheck disable=SC2016 # expansion happens inside the sandbox
 check "defaults: env inherited (canary visible)" defaults \
   bash -c '[[ "${SANDBOX_CFGTEST_CANARY:-}" == yes ]]'
-if [[ -f "$XDG_CONFIG_HOME/sandbox/default.cfg" ]]; then
-  pass "defaults: default.cfg auto-created"
-else
-  fail "defaults: default.cfg not created"
-fi
 
 ## ro project: $DIR bound read-only instead of rw
 fixture ro-project <<'EOF'

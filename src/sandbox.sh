@@ -71,54 +71,19 @@ done
 
 log "DIR=$DIR"
 
-# Config variables: global defaults come from default.cfg under the XDG
-# config dir, created with the stock policy on first run; the project cfg
-# is sourced on top and appends to or overrides them. Declared empty here
-# only so set -u (and shellcheck) survive a default.cfg that drops entries —
-# the policy itself lives in the cfgs.
+# Config variables, sourced in layers, each appending to or overriding the
+# previous: the default policy (/etc/sandbox.cfg when present, otherwise the
+# stock default.cfg shipped with the package; SANDBOX_DEFAULT_CFG overrides
+# the path outright), then the optional per-user default.cfg under XDG,
+# then the project cfg. Declared empty here only so set -u (and shellcheck)
+# survive a default cfg that drops entries — the policy itself lives in the
+# cfgs.
 args=()
-tmpfs=() ro=() rw=() bind=() overlay=() mask=() link=() env=( inherit )
-pre=() post=()
-net=1
-seccomp=default
-DEFAULT_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/default.cfg"
-if [[ ! -f "$DEFAULT_CFG" ]]; then
-  log "CREATING: $DEFAULT_CFG" 6
-  mkdir -p "${DEFAULT_CFG%/*}"
-  cat >"$DEFAULT_CFG" <<'EOF'
-args=(
-  --proc /proc
-  --dev /dev
-  --unshare-all
-  --die-with-parent
-)
-tmpfs=(
-  /tmp
-  "$HOME"
-)
-ro=(
-  /etc/passwd
-  /etc/group
-  /etc/resolv.conf
-  /etc/ssl
-  /etc/hosts
-  /etc/localtime
-)
+tmpfs=()
+ro=()
 rw=()
 bind=()
 overlay=()
-
-# nix-specific mounts, only when running on NixOS
-if [[ -e /etc/NIXOS ]]; then
-  ro+=(
-    /nix/store
-    /nix/var/nix
-    /etc/static
-  )
-  bind+=(
-    /run/current-system/sw/bin/env /usr/bin/env
-  )
-fi
 mask=()
 link=()
 env=( inherit )
@@ -126,11 +91,21 @@ pre=()
 post=()
 net=1
 seccomp=default
-EOF
+
+DEFAULT_CFG="${SANDBOX_DEFAULT_CFG:-/etc/sandbox.cfg}"
+if [[ ! -f "$DEFAULT_CFG" ]]; then
+  DEFAULT_CFG="@sandboxDefaultCfg@"
 fi
 log "SOURCE: $DEFAULT_CFG" 6
 # shellcheck disable=SC1090
 source "$DEFAULT_CFG"
+
+USER_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/default.cfg"
+if [[ -f "$USER_CFG" ]]; then
+  log "SOURCE: $USER_CFG" 6
+  # shellcheck disable=SC1090
+  source "$USER_CFG"
+fi
 
 log "SOURCE: $CFG" 6
 # shellcheck disable=SC1090
@@ -266,7 +241,8 @@ for (( i=0; i<${#link[@]}; i+=2 )); do
 done
 
 # Mount CFG read-only and set SANDBOX as the last step. SANDBOX is for easy
-# "am I sandboxed?" detection; the policy itself is readable from the mounted cfg.
+# "am I sandboxed?" detection. Only the project cfg is exposed inside — the
+# default/user layers it was sourced over are not.
 log "RO $CFG" 7
 args+=( --ro-bind "$CFG" "$CFG" )
 log "ENV: SANDBOX=$CFG" 7
