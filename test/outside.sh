@@ -327,8 +327,9 @@ else
   fail "show-config-#: output not commented"
 fi
 if out="$("$SANDBOX_BIN" --show-command "$root/defaults" -- true)" \
-   && grep -q -- '--unshare-all' <<<"$out" && [[ "$out" == "bwrap "*" -- true" ]]; then
-  pass "show-command: prints bwrap invocation"
+   && grep -q -- '--unshare-all' <<<"$out" \
+   && [[ "$out" == "bwrap "*" --seccomp 10 "*" -- true 10<"* ]]; then
+  pass "show-command: prints bwrap invocation incl. seccomp fd"
 else
   fail "show-command: broken output"
 fi

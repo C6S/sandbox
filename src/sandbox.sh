@@ -206,17 +206,19 @@ else
 	log "NET: DISABLED" 6
 fi
 
+SECCOMP_FILTER=""
 if [[ "$seccomp" == "none" ]]; then
 	log "SECCOMP: DISABLED" 6
 else
-  if [[ ! -e "$SECCOMP_DIR/$seccomp.bpf" ]]; then
-    log "SECCOMP: filter not found ($SECCOMP_DIR/$seccomp.bpf)" 3
+  SECCOMP_FILTER="$SECCOMP_DIR/$seccomp.bpf"
+  if [[ ! -e "$SECCOMP_FILTER" ]]; then
+    log "SECCOMP: filter not found ($SECCOMP_FILTER)" 3
     exit 1
   fi
-	log "SECCOMP: ENABLED ($SECCOMP_DIR/$seccomp.bpf)" 6
+	log "SECCOMP: ENABLED ($SECCOMP_FILTER)" 6
   # Open the filter on fd 10; the exec'd bwrap inherits it and reads its
   # BPF program from there.
-  exec 10<"$SECCOMP_DIR/$seccomp.bpf"
+  exec 10<"$SECCOMP_FILTER"
   args+=( --seccomp 10 )
 fi
 
@@ -321,10 +323,16 @@ args+=( --setenv SANDBOX "$CFG" )
 [[ $# -ge 1 ]] || set -- "${SHELL:-zsh}"
 
 # --show-command: print the fully assembled bwrap invocation instead of
-# running it. pre/post hooks are skipped — nothing is executed.
+# running it. pre/post hooks are skipped — nothing is executed. bwrap reads
+# the seccomp filter from fd 10, so the redirection feeding it is printed
+# too, keeping the command runnable as-is.
 if [[ "$MODE" == "show-command" ]]; then
   cmd="$(printf '%q ' bwrap "${args[@]}" -- "$@")"
-  printf '%s\n' "${cmd% }"
+  cmd="${cmd% }"
+  if [[ -n "$SECCOMP_FILTER" ]]; then
+    cmd+=" 10<$(printf '%q' "$SECCOMP_FILTER")"
+  fi
+  printf '%s\n' "$cmd"
   exit 0
 fi
 
