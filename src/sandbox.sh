@@ -108,6 +108,27 @@ log "SOURCE: $CFG" 6
 # shellcheck disable=SC1090
 source "$CFG"
 
+# Cfg paths may contain "." or ".." segments (e.g. "$DIR/../shared"), which
+# both bwrap's mountpoint creation and the mask/bind prefix matching below
+# take literally. Normalize them lexically (-s: no symlink resolution, so
+# NixOS symlinks like /etc/resolv.conf keep binding the symlink path itself;
+# -m: allow paths that don't exist yet). Symlink targets in link[] stay
+# literal — only mount paths are normalized.
+normalize() {
+  local -n paths="$1"
+  local i start="${2:-0}" step="${3:-1}"
+  for (( i=start; i<${#paths[@]}; i+=step )); do
+    paths[i]="$(realpath -sm -- "${paths[i]}")"
+  done
+}
+normalize tmpfs
+normalize ro
+normalize rw
+normalize bind
+normalize overlay
+normalize mask
+normalize link 1 2
+
 if [[ "$net" == "1" ]]; then
 	log "NET: ENABLED" 6
   args+=( --share-net )
