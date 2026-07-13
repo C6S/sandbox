@@ -133,28 +133,26 @@ source "$CFG"
 # both bwrap's mountpoint creation and the mask prefix matching below
 # take literally. Normalize them lexically (-s: no symlink resolution, so
 # NixOS symlinks like /etc/resolv.conf keep binding the symlink path itself;
-# -m: allow paths that don't exist yet). Symlink targets in link[] stay
-# literal — only mount paths are normalized.
+# -m: allow paths that don't exist yet).
 normalize() {
   local -n paths="$1"
-  local i start="${2:-0}" step="${3:-1}"
-  for (( i=start; i<${#paths[@]}; i+=step )); do
+  local i
+  for (( i=0; i<${#paths[@]}; i++ )); do
     paths[i]="$(realpath -sm -- "${paths[i]}")"
   done
 }
 normalize tmpfs
-normalize overlay
 normalize mask
-normalize link 1 2
 
 # ro/rw entries are either a single path (mounted at the same path inside)
 # or a SRC:DEST pair splitting on the first colon (host SRC appears at DEST
-# inside). A literal colon in a path is written \: — effective only inside
-# quotes, since bash eats the backslash in unquoted words before the cfg
-# value reaches us. Entries stay in escaped form in the arrays (so later
-# splits and --show-config keep working); split_mount decodes one entry
-# into src/dest via a sentinel byte no path can contain. For a plain
-# entry both halves come out identical.
+# inside); overlay and link entries are always pairs (PATH:STORE and
+# TARGET:LINKPATH). A literal colon in a path is written \: — effective
+# only inside quotes, since bash eats the backslash in unquoted words
+# before the cfg value reaches us. Entries stay in escaped form in the
+# arrays (so later splits and --show-config keep working); split_mount
+# decodes one entry into src/dest via a sentinel byte no path can contain.
+# For a plain entry both halves come out identical.
 split_mount() {
   local entry="${1//\\:/$'\x01'}"
   src="${entry%%:*}"
@@ -178,6 +176,15 @@ normalize_mounts() {
 }
 normalize_mounts ro
 normalize_mounts rw
+normalize_mounts overlay
+
+# link targets stay literal (they may be deliberately dangling or relative);
+# only the linkpath side is normalized.
+for (( i=0; i<${#link[@]}; i++ )); do
+  split_mount "${link[i]}"
+  dest="$(realpath -sm -- "$dest")"
+  link[i]="${src//:/\\:}:${dest//:/\\:}"
+done
 
 # --show-config[-#]: print the resolved (layered, normalized) policy as
 # sourceable cfg syntax and exit. Pair arrays print two elements per line.
@@ -203,9 +210,9 @@ if [[ "$MODE" == show-config* ]]; then
   show_array tmpfs 1
   show_array ro 1
   show_array rw 1
-  show_array overlay 2
+  show_array overlay 1
   show_array mask 1
-  show_array link 2
+  show_array link 1
   # env may lead with the lone "inherit" sentinel; keep it on its own line
   # so the NAME-value pairs after it stay aligned
   if [[ "${env[0]:-}" == "inherit" ]]; then
@@ -295,9 +302,10 @@ done
 # character devices). The store and the empty work dir overlayfs requires
 # on the same filesystem (kept beside the store as "<store>.work") are
 # created here on first use.
-for (( i=0; i<${#overlay[@]}; i+=2 )); do
-  path="${overlay[i]}"
-  store="${overlay[i+1]%/}"
+for mount in "${overlay[@]}"; do
+  split_mount "$mount"
+  path="$src"
+  store="$dest"
 	log "OVERLAY: $path -> $store" 7
   if [[ "$MODE" == "run" ]]; then
     mkdir -p "$store" "$store.work"
@@ -333,9 +341,10 @@ for mount in "${mask[@]}"; do
   fi
 done
 
-for (( i=0; i<${#link[@]}; i+=2 )); do
-	log "LINK: ${link[i]} -> ${link[i+1]}" 7
-  args+=( --symlink "${link[i]}" "${link[i+1]}" )
+for mount in "${link[@]}"; do
+  split_mount "$mount"
+	log "LINK: $src -> $dest" 7
+  args+=( --symlink "$src" "$dest" )
 done
 
 # Mount CFG read-only and set SANDBOX as the last step. SANDBOX is for easy

@@ -55,6 +55,11 @@ dest_of() {
   entry="${entry#*:}"
   printf '%s' "${entry//$'\x01'/:}"
 }
+src_of() {
+  local entry="${1//\\:/$'\x01'}"
+  entry="${entry%%:*}"
+  printf '%s' "${entry//$'\x01'/:}"
+}
 
 is_bound() {
   local path i
@@ -62,8 +67,10 @@ is_bound() {
     path="$(dest_of "$path")"
     [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
   done
-  for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
-    [[ "$1" == "${overlay[i]}" || "$1" == "${overlay[i]}"/* ]] && return 0
+  # overlays mount inside at the entry's src half (the store stays outside)
+  for path in "${overlay[@]}"; do
+    path="$(src_of "$path")"
+    [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
   done
   return 1
 }
@@ -115,8 +122,8 @@ for path in "${ro[@]}"; do
   fi
 done
 
-for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
-  dest="${overlay[i]}"
+for entry in "${overlay[@]}"; do
+  dest="$(src_of "$entry")"
   if [[ "$(fstype "$dest")" != overlayfs ]]; then
     bad "overlay dest not overlayfs: $dest (got: $(fstype "$dest"))"
   elif can_write "$dest"; then

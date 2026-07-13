@@ -70,9 +70,9 @@ The table shows the stock defaults.
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
 | `ro` | select `/etc` files; with a nix store also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
 | `rw` | empty | Read-write binds. |
-| `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |
+| `overlay` | empty | `path:store` pairs: `path` acts read-write inside, but writes land in host `store` instead of `path`. |
 | `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a `/dev/null` bind (writes are swallowed). Masked even if absent on the host. |
-| `link` | empty | Flat pairs of `target linkpath`: symlinks created inside. |
+| `link` | empty | `target:linkpath` pairs: symlinks created inside. |
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
 | `net` | `1` | `--share-net`. `0` isolates the network. |
 | `seccomp` | `default` | Filter to load: `default`, `allow-userns`, or `none`. |
@@ -81,7 +81,8 @@ The table shows the stock defaults.
 An `ro`/`rw` entry is normally a single path, mounted at the same path
 inside. Writing it as `src:dest` (split on the first colon) mounts host
 `src` at `dest` inside instead — e.g.
-`ro+=( "$HOME/.config/foo:/etc/foo" )`. A literal colon in a path is
+`ro+=( "$HOME/.config/foo:/etc/foo" )`. `overlay` and `link` entries use
+the same `a:b` syntax, always as pairs. A literal colon in a path is
 escaped as `\:`; the entry must be quoted, since bash strips the
 backslash from unquoted words before the cfg value is seen.
 

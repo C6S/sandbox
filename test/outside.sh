@@ -166,8 +166,8 @@ check "env-replace: host env cleared (canary absent)" env-replace \
 fixture links <<'EOF'
 rw+=( "$DIR" )
 link+=(
-  "$DIR"     "$HOME/project"
-  /nix/store "$HOME/store"
+  "$DIR:$HOME/project"
+  "/nix/store:$HOME/store"
 )
 EOF
 check "links: inside.sh passes" links
@@ -247,7 +247,7 @@ mkdir -p "$root/overlay-lower"
 echo lower-data >"$root/overlay-lower/file"
 fixture overlays <<EOF
 rw+=( "\$DIR" )
-overlay+=( "$root/overlay-lower" "$root/overlay-store" )
+overlay+=( "$root/overlay-lower:$root/overlay-store" )
 EOF
 check "overlays: inside.sh passes" overlays
 check "overlays: lower content visible" overlays \
