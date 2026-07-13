@@ -314,10 +314,11 @@ for mount in "${overlay[@]}"; do
 done
 
 # Masks shadow whatever the binds above exposed (later mounts win in bwrap):
-# directories get an empty tmpfs, files a /dev/null bind (writable, so
-# redirects into a masked file are swallowed by the device instead of
-# failing with EROFS) — the same mechanism systemd uses for masking. A
-# mask is emitted even for paths absent
+# directories get an empty tmpfs, files a /dev/null bind — the same
+# mechanism systemd uses for masking. The device needs --dev-bind: plain
+# binds are mounted nodev in unprivileged bwrap, turning any open of the
+# masked file into EACCES; dev-bound, reads see EOF and writes are
+# swallowed like a real /dev/null. A mask is emitted even for paths absent
 # on the host, so a file appearing later is already shadowed; bwrap creates
 # the missing mountpoint itself, which leaves an empty placeholder on the
 # host under a rw bind and fails the launch under a ro one. Dir-vs-file is
@@ -337,7 +338,7 @@ for mount in "${mask[@]}"; do
     args+=( --tmpfs "$mount" )
   else
 	  log "MASK (null): $mount" 7
-    args+=( --bind /dev/null "$mount" )
+    args+=( --dev-bind /dev/null "$mount" )
   fi
 done
 

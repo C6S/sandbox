@@ -70,6 +70,10 @@ fixture() {
   mkdir -p "$dir"
   cat >"$dir/.sandbox.cfg"
   cp "$INSIDE" "$dir/inside.sh"
+  # Bake the fully-resolved policy (all layers applied) beside the cfg;
+  # inside.sh prefers it over re-sourcing the project cfg, so its checks
+  # see default-layer mounts too and pull nothing from $HOME or /etc.
+  "$SANDBOX_BIN" "$dir" --show-config >"$dir/resolved.cfg"
 }
 
 # in_sandbox <name> [cmd...]: launch the fixture's sandbox and run cmd inside

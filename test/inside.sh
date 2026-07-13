@@ -21,9 +21,11 @@ if [[ -z "${SANDBOX:-}" || ! -f "${SANDBOX:-}" ]]; then
   exit 2
 fi
 
-# Re-source the mounted cfg (over the same defaults sandbox.sh uses) to learn
-# the policy. Only cfg-declared paths are probed; the base defaults are
-# covered by the invariant checks below.
+# Learn the policy: prefer the fully-resolved cfg the driver baked next to
+# the project cfg (--show-config output: complete assignments, all layers
+# applied — including default-layer mounts like the NixOS env shim that the
+# project cfg alone can't reveal). Fall back to re-sourcing the project cfg
+# over empty vars; either way nothing is pulled from $HOME or /etc here.
 # DIR is referenced by the sourced cfg; pre/post are sourced but not probed.
 # shellcheck disable=SC2034
 DIR="${SANDBOX%/.sandbox.cfg}"
@@ -31,8 +33,13 @@ DIR="${SANDBOX%/.sandbox.cfg}"
 tmpfs=() ro=() rw=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
 net=1
 seccomp=default
-# shellcheck disable=SC1090
-source "$SANDBOX"
+if [[ -f "$DIR/resolved.cfg" ]]; then
+  # shellcheck disable=SC1091
+  source "$DIR/resolved.cfg"
+else
+  # shellcheck disable=SC1090
+  source "$SANDBOX"
+fi
 
 fstype() { stat -f -c %T "$1" 2>/dev/null; }
 
@@ -61,16 +68,19 @@ src_of() {
   printf '%s' "${entry//$'\x01'/:}"
 }
 
+# A path counts as bound if it lies under a mount dest, or if a dest lies
+# under it — bwrap creates missing mountpoints, so a bind at /usr/bin/env
+# materializes /usr inside.
 is_bound() {
   local path i
   for path in "${ro[@]}" "${rw[@]}" "${tmpfs[@]}"; do
     path="$(dest_of "$path")"
-    [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
+    [[ "$1" == "$path" || "$1" == "$path"/* || "$path" == "$1"/* ]] && return 0
   done
   # overlays mount inside at the entry's src half (the store stays outside)
   for path in "${overlay[@]}"; do
     path="$(src_of "$path")"
-    [[ "$1" == "$path" || "$1" == "$path"/* ]] && return 0
+    [[ "$1" == "$path" || "$1" == "$path"/* || "$path" == "$1"/* ]] && return 0
   done
   return 1
 }
@@ -156,11 +166,13 @@ for path in "${mask[@]}"; do
   fi
 done
 
-for (( i = 0; i < ${#link[@]}; i += 2 )); do
-  if [[ "$(readlink "${link[i+1]}" 2>/dev/null)" == "${link[i]}" ]]; then
-    ok "link ${link[i+1]} -> ${link[i]}"
+for entry in "${link[@]}"; do
+  target="$(src_of "$entry")"
+  linkpath="$(dest_of "$entry")"
+  if [[ "$(readlink "$linkpath" 2>/dev/null)" == "$target" ]]; then
+    ok "link $linkpath -> $target"
   else
-    bad "link ${link[i+1]} does not point to ${link[i]}"
+    bad "link $linkpath does not point to $target"
   fi
 done
 
