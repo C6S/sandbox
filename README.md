@@ -13,7 +13,9 @@ project itself read-write plus whatever else it needs. On top of that, a
 seccomp filter blocks rarely-needed kernel attack surface and the
 TIOCSTI/TIOCLINUX terminal-injection ioctls.
 
-The defaults assume NixOS.
+Nix-specific defaults (the `/nix` mounts, `/etc/static`, and a
+`/usr/bin/env` shim from the system profile) apply only when NixOS is
+detected (`/etc/NIXOS` exists).
 
 ## Usage
 
@@ -53,7 +55,7 @@ the project `.sandbox.cfg` is sourced on top of it.
 | Var | Default | Meaning |
 |---|---|---|
 | `tmpfs` | `/tmp`, `$HOME` | Fresh tmpfs mounts. |
-| `ro` | `/nix`, select `/etc` files | Read-only binds. |
+| `ro` | select `/etc` files; on NixOS also `/nix/store`, `/nix/var/nix`, `/etc/static` | Read-only binds. |
 | `rw` | empty | Read-write binds. |
 | `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
 | `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |

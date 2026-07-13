@@ -97,8 +97,6 @@ tmpfs=(
   "$HOME"
 )
 ro=(
-  /nix
-  /etc/static
   /etc/passwd
   /etc/group
   /etc/resolv.conf
@@ -109,6 +107,18 @@ ro=(
 rw=()
 bind=()
 overlay=()
+
+# nix-specific mounts, only when running on NixOS
+if [[ -e /etc/NIXOS ]]; then
+  ro+=(
+    /nix/store
+    /nix/var/nix
+    /etc/static
+  )
+  bind+=(
+    /run/current-system/sw/bin/env /usr/bin/env
+  )
+fi
 mask=()
 link=()
 env=( inherit )
