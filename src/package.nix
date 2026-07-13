@@ -37,7 +37,7 @@
 
 stdenv.mkDerivation {
   pname = "sandbox";
-  version = "0.1.3";
+  version = "0.1.4";
   src = sandboxSrc;
 
   nativeBuildInputs = [ makeWrapper ];
