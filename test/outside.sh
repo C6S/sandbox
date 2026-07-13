@@ -204,6 +204,33 @@ else
   fail "bind-pairs: dest write not visible at host src"
 fi
 
+## overlays: reads come from the host path, writes divert to the store dir
+mkdir -p "$root/overlay-lower"
+echo lower-data >"$root/overlay-lower/file"
+fixture overlays <<EOF
+rw+=( "\$DIR" )
+overlay+=( "$root/overlay-lower" "$root/overlay-store" )
+EOF
+check "overlays: inside.sh passes" overlays
+check "overlays: lower content visible" overlays \
+  bash -c "[[ \"\$(cat $root/overlay-lower/file)\" == lower-data ]]"
+check "overlays: dest accepts writes" overlays \
+  bash -c "echo from-inside >$root/overlay-lower/probe && echo modified >$root/overlay-lower/file"
+if [[ ! -e "$root/overlay-lower/probe" && \
+      "$(cat "$root/overlay-lower/file" 2>/dev/null)" == lower-data ]]; then
+  pass "overlays: host lower untouched"
+else
+  fail "overlays: writes leaked into the lower dir"
+fi
+if [[ "$(cat "$root/overlay-store/probe" 2>/dev/null)" == from-inside && \
+      "$(cat "$root/overlay-store/file" 2>/dev/null)" == modified ]]; then
+  pass "overlays: writes landed in the store"
+else
+  fail "overlays: writes missing from the store"
+fi
+check "overlays: store persists across launches" overlays \
+  bash -c "[[ \"\$(cat $root/overlay-lower/file)\" == modified && \"\$(cat $root/overlay-lower/probe)\" == from-inside ]]"
+
 ## masks: secrets under an rw bind are hidden, host copies stay intact
 fixture masks <<'EOF'
 rw+=( "$DIR" )

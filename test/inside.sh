@@ -28,7 +28,7 @@ fi
 # shellcheck disable=SC2034
 DIR="${SANDBOX%/.sandbox.cfg}"
 # shellcheck disable=SC2034
-tmpfs=() ro=() rw=() bind=() mask=() link=() env=( inherit ) pre=() post=()
+tmpfs=() ro=() rw=() bind=() overlay=() mask=() link=() env=( inherit ) pre=() post=()
 net=1
 seccomp=default
 # shellcheck disable=SC1090
@@ -54,6 +54,9 @@ is_bound() {
   done
   for (( i = 1; i < ${#bind[@]}; i += 2 )); do
     [[ "$1" == "${bind[i]}" || "$1" == "${bind[i]}"/* ]] && return 0
+  done
+  for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
+    [[ "$1" == "${overlay[i]}" || "$1" == "${overlay[i]}"/* ]] && return 0
   done
   return 1
 }
@@ -111,6 +114,17 @@ for (( i = 0; i < ${#bind[@]}; i += 2 )); do
     if can_write "$dest"; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
   else
     if [[ -w "$dest" ]]; then ok "bind dest writable: $dest"; else bad "bind dest not writable: $dest"; fi
+  fi
+done
+
+for (( i = 0; i < ${#overlay[@]}; i += 2 )); do
+  dest="${overlay[i]}"
+  if [[ "$(fstype "$dest")" != overlayfs ]]; then
+    bad "overlay dest not overlayfs: $dest (got: $(fstype "$dest"))"
+  elif can_write "$dest"; then
+    ok "overlay dest writable: $dest"
+  else
+    bad "overlay dest not writable: $dest"
   fi
 done
 

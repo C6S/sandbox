@@ -85,7 +85,6 @@ tmpfs=(
 )
 ro=(
 	/nix
-	/run/current-system
   /etc/static
   /etc/passwd
   /etc/group
@@ -96,6 +95,7 @@ ro=(
 )
 rw=()
 bind=()
+overlay=()
 mask=()
 link=()
 env=( inherit )
@@ -170,6 +170,20 @@ done
 for (( i=0; i<${#bind[@]}; i+=2 )); do
 	log "BIND: ${bind[i]} -> ${bind[i+1]}" 7
   args+=( --bind "${bind[i]}" "${bind[i+1]}" )
+done
+
+# Overlays act like rw binds that divert writes: the host path becomes the
+# read-only lower layer of an overlayfs, and writes go to the store dir
+# instead (modified files as copied-up whole files, deletions as whiteout
+# character devices). The store and the empty work dir overlayfs requires
+# on the same filesystem (kept beside the store as "<store>.work") are
+# created here on first use.
+for (( i=0; i<${#overlay[@]}; i+=2 )); do
+  path="${overlay[i]}"
+  store="${overlay[i+1]%/}"
+	log "OVERLAY: $path -> $store" 7
+  mkdir -p "$store" "$store.work"
+  args+=( --overlay-src "$path" --overlay "$store" "$store.work" "$path" )
 done
 
 # Masks shadow whatever the binds above exposed (later mounts win in bwrap):

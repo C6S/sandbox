@@ -51,6 +51,7 @@ env+=( HISTFILE "$DIR/.zsh_history" )
 | `ro` | `/nix`, `/run/current-system`, select `/etc` files | Read-only binds. |
 | `rw` | empty | Read-write binds. |
 | `bind` | empty | Flat pairs of `src dest`: host `src` bind-mounted read-write at `dest` inside. |
+| `overlay` | empty | Flat pairs of `path store`: `path` acts read-write inside, but writes land in host `store` instead of `path`. |
 | `mask` | empty | Paths hidden even where a bind exposes them: dirs become an empty tmpfs, files a read-only `/dev/null`. Masked even if absent on the host. |
 | `link` | empty | Flat pairs of `target linkpath`: symlinks created inside. |
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
@@ -67,7 +68,15 @@ later is already shadowed; bubblewrap creates the missing mountpoint itself,
 which leaves an empty placeholder file on the host when the path sits under
 a `rw` bind, and fails the launch when it sits under a `ro` one.
 
-A missing `ro`, `rw`, or `bind` source path fails the launch.
+`overlay` mounts `path` as an overlayfs with the host path as the read-only
+lower layer and `store` as the upper: the sandbox sees a writable `path`, but
+the host copy is never touched — modified files are copied up into `store`
+whole, deletions become whiteout character devices there, and the overlaid
+state persists across launches. `store` is created on demand, along with the
+`<store>.work` scratch directory overlayfs requires on the same filesystem.
+Unprivileged overlayfs needs kernel ≥ 5.11.
+
+A missing `ro`, `rw`, `bind`, or `overlay` source path fails the launch.
 
 Appending to `env` keeps the host environment and sets the named variables.
 Replacing the array (dropping the `inherit` sentinel) clears the environment
@@ -130,8 +139,8 @@ Exit 0 means the loaded cfg is enforced as declared.
 
 `test/outside.sh` covers the cfg matrix from the outside: it generates dummy
 project directories with various `.sandbox.cfg` files (net isolation, seccomp
-variants, env inherit/replace, links, extra binds, `bind` pairs, masks,
-`pre`/`post` hooks, and
+variants, env inherit/replace, links, extra binds, `bind` pairs, overlays,
+masks, `pre`/`post` hooks, and
 the refusal paths), launches a sandbox on each, and runs `inside.sh` inside.
 It must run from an unsandboxed shell — the default seccomp profile blocks
 the nested user namespaces bwrap needs:
