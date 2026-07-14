@@ -13,9 +13,15 @@ project itself read-write plus whatever else it needs. On top of that, a
 seccomp filter blocks rarely-needed kernel attack surface and the
 TIOCSTI/TIOCLINUX terminal-injection ioctls.
 
-Nix-specific defaults (the `/nix` mounts, and where they exist `/etc/static`
-and a `/usr/bin/env` shim from the system profile) apply only when a nix
-store is detected (`/nix/store` exists).
+The stock policy adapts to the host it runs on, since "everything else doesn't
+exist inside" only works if the toolchain is bound in explicitly. On NixOS
+that means `/nix/store` plus `/etc/static` and the system profile's
+`/usr/bin/env` shim. On an FHS distro it means `/usr` and whichever of
+`/bin`, `/sbin`, `/lib*` are real directories — on a merged-`/usr` system
+those are symlinks into `/usr`, and are recreated as symlinks rather than
+bound — plus the glibc bits (`/etc/ld.so.cache`, `/etc/nsswitch.conf`) that
+NixOS has no use for. A nix store on a non-NixOS host gets both. Targets
+glibc + FHS + systemd; see [Portability](#portability).
 
 ## Usage
 
@@ -77,6 +83,8 @@ The table shows the stock defaults.
 | `env` | `( inherit )` | Flat pairs of `NAME value`. |
 | `net` | `1` | `--share-net`. `0` isolates the network. |
 | `seccomp` | `default` | Filter to load: `default`, `allow-userns`, or `none`. |
+| `slice` | empty | systemd slice the sandbox is placed under. Limits on the slice cap all sandboxes in it together. |
+| `limit` | empty | Flat pairs of `Property value` (`MemoryMax 4G`, `CPUQuota 200%`, …) capping this sandbox alone. |
 | `pre` / `post` | empty | Commands eval'd outside the sandbox, before launch / after exit. |
 
 An `ro`/`rw`/`dev` entry is normally a single path, mounted at the same path
@@ -124,8 +132,106 @@ them.
 failing `pre` aborts the launch; `post` runs on normal exit, not when the
 wrapper is killed by a signal.
 
+## Resource caps
+
+Bubblewrap does namespaces and seccomp, not cgroups, so a runaway process
+inside the sandbox can still eat the host's RAM and CPU. Setting `slice` or
+`limit` launches bwrap inside a transient systemd scope
+(`systemd-run --user --scope`), which puts the sandbox and everything it
+spawns in a cgroup the kernel enforces limits on.
+
+```sh
+# .sandbox.cfg
+slice=sandbox.slice  # aggregate ceiling, shared with every other sandbox
+limit+=(             # per-sandbox ceiling, this project only
+  MemoryHigh 3G      # throttle + reclaim above this
+  MemoryMax  4G      # hard limit; the cgroup is OOM-killed at it
+  CPUQuota   200%    # two cores' worth
+  TasksMax   512
+)
+```
+
+The two answer different questions. `limit` entries are properties of the
+sandbox's own scope, so each sandbox gets its own private ceiling — but N
+sandboxes then get N times the limit. `slice` places that scope under a shared
+slice, and limits on the *slice* apply to everything in it collectively: one
+budget, however many sandboxes are open. Use `limit` to stop one sandbox
+running away, `slice` to stop all of them together outgrowing the machine.
+Any [resource-control property][rc] systemd accepts on a scope works.
+
+[rc]: https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html
+
+Two things to know, because both fail quietly:
+
+**A slice carries no limits until a slice unit gives it some.** Naming a slice
+that doesn't exist doesn't fail — systemd creates it implicitly, with no
+limits, and caps nothing. The numbers live in a unit:
+
+```nix
+# NixOS, alongside the package's own config
+systemd.user.slices.sandbox = {
+  description = "Aggregate resource ceiling for all sandboxes";
+  sliceConfig = {
+    MemoryHigh = "6G";
+    MemoryMax = "8G";
+    CPUQuota = "400%";
+  };
+};
+```
+
+**A limit only bites for a controller systemd has delegated to your user
+manager.** `memory` and `pids` are delegated by default; `cpu` frequently is
+not, and an undelegated `CPUQuota=` is accepted and then silently ignored.
+Check what you have:
+
+```sh
+cat /sys/fs/cgroup/user.slice/user-$UID.slice/cgroup.controllers
+```
+
+If `cpu` is missing, delegate it:
+
+```nix
+systemd.services."user@".serviceConfig.Delegate = "cpu cpuset io memory pids";
+```
+
+Grouping is useful on its own even without limits: `systemctl --user status
+sandbox.slice` lists every running sandbox, `systemctl --user stop
+sandbox.slice` kills them all, and `systemd-cgtop` shows live usage per
+sandbox.
+
+On a host with no systemd user session (a non-systemd distro, a bare `ssh`
+without lingering), the caps cannot be applied. The sandbox still launches —
+seccomp and the namespaces are unaffected — and logs a warning; run with
+`LOGLEVEL=4` to see it.
+
 Inside the sandbox, `$SANDBOX` points at the cfg — a cheap "am I sandboxed?"
 check.
+
+## Portability
+
+Supported: **glibc + FHS + systemd** Linux, and NixOS. The stock `default.cfg`
+detects which system tree it is on rather than assuming one:
+
+| Host | What the default policy binds |
+|---|---|
+| NixOS | `/nix/store`, `/nix/var/nix`, `/etc/static`, the `/usr/bin/env` shim. `/usr` is *not* bound — it holds nothing else. |
+| FHS (Debian, Arch, Fedora, …) | `/usr`, plus each of `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32` that is a real directory. Merged-`/usr` symlinks are recreated as symlinks. Plus the glibc lookup files: `/etc/ld.so.cache`, `/etc/ld.so.conf{,.d}`, `/etc/nsswitch.conf`, `/etc/alternatives`. |
+| nix on an FHS distro | Both: the store *and* the FHS tree. |
+
+Every host also gets the `/etc` identity, network, trust, and time files —
+`passwd`, `group`, `hosts`, `resolv.conf`, `localtime`, and the CA bundle
+wherever the distro keeps it (`ssl`, `pki`, `ca-certificates`) — each bound
+only where it exists. A missing `ro` source normally fails the launch, which is
+the right behaviour for a path a cfg named explicitly, but none of these is
+universal (`/etc/ssl` is absent on some Fedora installs, `/etc/localtime` on a
+fresh Arch), and the default policy must not fail a launch over one.
+
+Known gaps: **musl** (Alpine) is untested — the linker paths differ.
+**Non-systemd** hosts (OpenRC, runit) work, but `slice`/`limit` cannot be
+enforced there and degrade to a warning. Building outside nix has no supported
+path yet: `package.nix` is the only build, so a non-nix host has no way to
+produce the seccomp blobs. A `Makefile` against `libseccomp-dev` is the
+missing piece.
 
 ## seccomp
 

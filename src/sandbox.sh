@@ -110,6 +110,8 @@ pre=()
 post=()
 net=1
 seccomp=default
+slice=
+limit=()
 
 CFG_DEFAULT="${SANDBOX_CFG_DEFAULT:-/etc/sandbox.cfg}"
 if [[ ! -f "$CFG_DEFAULT" ]]; then
@@ -231,8 +233,10 @@ if [[ "$MODE" == show-config* ]]; then
   fi
   show_array pre 1
   show_array post 1
+  show_array limit 2
   printf '%snet=%q\n' "$comment" "$net"
   printf '%sseccomp=%q\n' "$comment" "$seccomp"
+  printf '%sslice=%q\n' "$comment" "$slice"
   exit 0
 fi
 
@@ -377,12 +381,73 @@ args+=( --setenv SANDBOX "$CFG" )
 [[ $# -ge 1 && "$1" == "--" ]] && shift
 [[ $# -ge 1 ]] || set -- "${SHELL:-zsh}"
 
+# Resource caps. bwrap does namespaces and seccomp, not cgroups, so a cap can
+# only come from the cgroup the sandbox lands in: bwrap is launched inside a
+# transient systemd scope, where `limit` pairs become that scope's own
+# limits (one ceiling per sandbox) and `slice` places the scope under a shared
+# slice whose limits cap every sandbox in it *in aggregate* (one ceiling for
+# all of them, however many are open).
+#
+# A slice carries no limits of its own unless a slice unit defines them, and
+# systemd creates a named-but-undefined slice implicitly rather than failing —
+# so `slice` alone buys grouping (systemctl --user status/stop "$slice",
+# systemd-cgtop) but caps nothing until the unit exists. The limits also only
+# bite for controllers systemd has delegated to the user manager: memory and
+# pids are delegated by default, cpu often is not, and an undelegated
+# CPUQuota= is accepted and silently ignored. Check with
+#   cat /sys/fs/cgroup/user.slice/user-$UID.slice/cgroup.controllers
+launcher=()
+if [[ -n "$slice" || ${#limit[@]} -gt 0 ]]; then
+  if (( ${#limit[@]} % 2 )); then
+    log "LIMIT: odd element count; expected NAME value pairs" 3
+    exit 1
+  fi
+  if ! command -v systemd-run >/dev/null 2>&1 ||
+     [[ ! -d "${XDG_RUNTIME_DIR:-}/systemd" ]]; then
+    # No systemd user session (non-systemd host, plain ssh, ...). seccomp and
+    # the namespaces still hold, so warn rather than refuse to launch — at
+    # level 3, since the default LOGLEVEL shows nothing above it.
+    log "LIMIT: no systemd user session; launching UNCAPPED" 3
+  else
+    # --scope (not --service): systemd-run allocates the unit and then execs
+    # bwrap in place, so the PID, the controlling TTY, the exit status and the
+    # inherited seccomp fd 10 all pass straight through to it. --collect reaps
+    # the unit if the sandbox dies on a cap (a MemoryMax OOM-kill leaves a
+    # failed scope behind otherwise).
+    launcher=(
+      systemd-run --user --scope --quiet --collect
+      --description="sandbox $DIR"
+    )
+    if [[ -n "$slice" ]]; then
+      log "SLICE: $slice" 6
+      launcher+=( --slice="$slice" )
+    fi
+    for (( i=0; i<${#limit[@]}; i+=2 )); do
+      log "LIMIT: ${limit[i]}=${limit[i+1]}" 6
+      launcher+=( --property="${limit[i]}=${limit[i+1]}" )
+    done
+    # Terminate systemd-run's own options: bwrap's first argument is --proc,
+    # which a permuting getopt would otherwise try to claim.
+    launcher+=( -- )
+  fi
+fi
+
+# systemd-run builds its child's argv itself, so the exec -a argv[0] rewrite
+# (which makes the sandbox show up under the command's own name rather than as
+# "bwrap") survives only on the uncapped path.
+launch() {
+  if (( ${#launcher[@]} )); then
+    exec "${launcher[@]}" bwrap "${args[@]}" -- "$@"
+  fi
+  exec -a "$1" bwrap "${args[@]}" -- "$@"
+}
+
 # --show-command: print the fully assembled bwrap invocation instead of
 # running it. pre/post hooks are skipped — nothing is executed. bwrap reads
 # the seccomp filter from fd 10, so the redirection feeding it is printed
 # too, keeping the command runnable as-is.
 if [[ "$MODE" == "show-command" ]]; then
-  cmd="$(printf '%q ' bwrap "${args[@]}" -- "$@")"
+  cmd="$(printf '%q ' "${launcher[@]}" bwrap "${args[@]}" -- "$@")"
   cmd="${cmd% }"
   if [[ -n "$SECCOMP_FILTER" ]]; then
     cmd+=" 10<$(printf '%q' "$SECCOMP_FILTER")"
@@ -398,16 +463,16 @@ for cmd in "${pre[@]}"; do
   eval "$cmd"
 done
 
-log "EXEC: bwrap ${args[*]} -- $*" 7
+log "EXEC: ${launcher[*]} bwrap ${args[*]} -- $*" 7
 
 if [[ ${#post[@]} -eq 0 ]]; then
-  exec -a "$1" bwrap "${args[@]}" -- "$@"
+  launch "$@"
 fi
 # post hooks need this shell to outlive bwrap: trade exec for a subshell
 # (keeping the argv[0] trick) and wait. They run on normal exit, not when
 # the wrapper itself is killed by a signal.
 rc=0
-( exec -a "$1" bwrap "${args[@]}" -- "$@" ) || rc=$?
+( launch "$@" ) || rc=$?
 for cmd in "${post[@]}"; do
   log "POST: $cmd" 6
   eval "$cmd"

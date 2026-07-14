@@ -6,6 +6,7 @@
   };
 
   packages = [
+    pkgs.git
     pkgs.nixfmt
     pkgs.statix
     pkgs.deadnix
