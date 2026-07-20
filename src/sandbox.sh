@@ -291,15 +291,30 @@ for mount in "${tmpfs[@]}"; do
   args+=( --tmpfs "$mount" )
 done
 
+# bwrap creates a bind's mountpoint but not a missing parent directory for
+# it: a bind under a nonexistent dir (e.g. a file bound into /bin on a host
+# where only /usr/bin exists) is silently dropped. The namespace root is
+# writable, so have bwrap mkdir -p the parent first; --dir is a no-op when
+# the directory already exists.
+ensure_parent() {
+  local parent
+  parent="$(dirname -- "$1")"
+  if [[ "$parent" != "/" ]]; then
+    args+=( --dir "$parent" )
+  fi
+}
+
 for mount in "${ro[@]}"; do
   split_mount "$mount"
 	log "RO: $src -> $dest" 7
+  ensure_parent "$dest"
   args+=( --ro-bind "$src" "$dest" )
 done
 
 for mount in "${rw[@]}"; do
   split_mount "$mount"
 	log "RW: $src -> $dest" 7
+  ensure_parent "$dest"
   args+=( --bind "$src" "$dest" )
 done
 
@@ -315,6 +330,7 @@ done
 for mount in "${dev[@]}"; do
   split_mount "$mount"
 	log "DEV: $src -> $dest" 7
+  ensure_parent "$dest"
   args+=( --dev-bind "$src" "$dest" )
 done
 
@@ -357,9 +373,11 @@ for mount in "${mask[@]}"; do
   done
   if [[ -d "$hostpath" ]]; then
 	  log "MASK (tmpfs): $mount" 7
+    ensure_parent "$mount"
     args+=( --tmpfs "$mount" )
   else
 	  log "MASK (null): $mount" 7
+    ensure_parent "$mount"
     args+=( --dev-bind /dev/null "$mount" )
   fi
 done

@@ -214,6 +214,23 @@ else
   fail "rw-pairs: dest write not visible at host src"
 fi
 
+## missing parent dirs: a file bound under a directory that exists nowhere in
+## the namespace (bwrap creates the mountpoint but not its parents; the
+## wrapper emits --dir for them). /bin is the real-world case on merged-/usr
+## hosts where only /usr exists inside.
+mkdir -p "$root/parent-src"
+echo parent-ok >"$root/parent-src/tool"
+fixture missing-parent <<EOF
+rw+=( "\$DIR" )
+ro+=( "$root/parent-src/tool:/bin/probe-tool" "$root/parent-src/tool:/opt/deep/nested/tool" )
+EOF
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "missing-parent: file bind under absent /bin" missing-parent \
+  bash -c '[[ "$(cat /bin/probe-tool)" == parent-ok ]]'
+# shellcheck disable=SC2016 # expansion happens inside the sandbox
+check "missing-parent: file bind under absent nested dir" missing-parent \
+  bash -c '[[ "$(cat /opt/deep/nested/tool)" == parent-ok ]]'
+
 ## ro pairs: same relocation, but writes at the dest are refused
 mkdir -p "$root/ro-pair-src"
 echo ro-data >"$root/ro-pair-src/file"
