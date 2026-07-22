@@ -65,7 +65,8 @@ stdenv.mkDerivation {
     install -Dm755 sandbox.sh $out/bin/sandbox
     substituteInPlace $out/bin/sandbox \
       --replace-fail '@sandboxSeccompDir@' "$out/share/sandbox" \
-      --replace-fail '@sandboxDefaultCfg@' "$out/share/sandbox/default.cfg"
+      --replace-fail '@sandboxDefaultCfg@' "$out/share/sandbox/default.cfg" \
+      --replace-fail '@sandboxVersion@' "$version"
     wrapProgram $out/bin/sandbox \
       --prefix PATH : ${
         lib.makeBinPath [

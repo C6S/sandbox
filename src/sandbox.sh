@@ -12,6 +12,18 @@ set -euo pipefail
 # seccomp=none (overridable in a .sandbox.cfg) disables filtering entirely.
 SECCOMP_DIR="@sandboxSeccompDir@"
 
+# Substituted with the package version at build time. When running straight
+# from a checkout the placeholder survives, and git describe reports the
+# last tag, or tag-commits-ghash[-dirty] when the tree has moved past it.
+VERSION="@sandboxVersion@"
+version() {
+  if [[ "$VERSION" == @sandbox*@ ]]; then
+    VERSION="$(git -C "$(dirname "$(readlink -f "$0")")" \
+                 describe --tags --dirty 2>/dev/null || echo unknown)"
+  fi
+  echo "sandbox $VERSION"
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [option] [dir] [-- command [args...]]
@@ -26,6 +38,7 @@ Options:
   --show-config-#  same, but #-prefixed, e.g. to document the inherited
                    policy: $(basename "$0") --show-config-# >> .sandbox.cfg
   --show-command   print the bwrap command that would run, without running it
+  --version        print the sandbox version and exit
 
 Examples:
   $(basename "$0")                     open shell in current directory
@@ -58,6 +71,10 @@ while [[ $# -ge 1 && "$1" != "--" ]]; do
     --show-config)    MODE=show-config ;;
     --show-config-\#) MODE=show-config-commented ;;
     --show-command)   MODE=show-command ;;
+    --version)
+      version
+      exit 0
+      ;;
     -*)
       log "Unknown option: $1" 3
       exit 1
