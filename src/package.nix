@@ -26,15 +26,67 @@
 {
   lib,
   stdenv,
+  buildEnv,
   libseccomp,
   makeWrapper,
   shellcheck,
   bubblewrap,
   coreutils,
   zsh,
+  gnused,
+  gawk,
+  gnugrep,
+  findutils,
+  gnutar,
+  gzip,
+  unzip,
+  zip,
+  curl,
+  jq,
+  file,
+  diffutils,
+  gnupatch,
+  ripgrep,
+  openssh,
+  nix,
+  devenv,
   sandboxSrc ? ./.,
 }:
 
+let
+  # Pinned fallback toolset, mounted by default.cfg at
+  # /run/current-system/sw/bin (already last on PATH on NixOS hosts). Common
+  # POSIX/data tools plus nix and devenv, and zsh so a NixOS $SHELL resolves
+  # at its usual path without a separate bind (bash/sh come from devenv
+  # profiles). Nothing whose version drift matters — formatters, linters,
+  # runtimes belong in each project's devenv, which shadows this set.
+  # Versions move only with this package's nixpkgs pin, unlike the host's
+  # rolling system profile.
+  sw = buildEnv {
+    name = "sandbox-sw";
+    paths = [
+      zsh
+      coreutils
+      gnused
+      gawk
+      gnugrep
+      findutils
+      gnutar
+      gzip
+      unzip
+      zip
+      curl
+      jq
+      file
+      diffutils
+      gnupatch
+      ripgrep
+      openssh
+      nix
+      devenv
+    ];
+  };
+in
 stdenv.mkDerivation {
   pname = "sandbox";
   version = "0.2.1";
@@ -62,6 +114,8 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -Dm444 -t $out/share/sandbox default.bpf allow-userns.bpf default.cfg
+    substituteInPlace $out/share/sandbox/default.cfg \
+      --replace-fail '@sandboxSw@' ${sw}
     install -Dm755 sandbox.sh $out/bin/sandbox
     substituteInPlace $out/bin/sandbox \
       --replace-fail '@sandboxSeccompDir@' "$out/share/sandbox" \
