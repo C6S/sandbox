@@ -38,7 +38,9 @@ Options:
   --show-config-#  same, but #-prefixed, e.g. to document the inherited
                    policy: $(basename "$0") --show-config-# >> .sandbox.cfg
   --show-command   print the bwrap command that would run, without running it
-  --version        print the sandbox version and exit
+  --allow          allow the closest .sandbox.cfg as it is now; a new or
+                   changed cfg is refused until allowed again
+  --version       print the sandbox version and exit
 
 Examples:
   $(basename "$0")                     open shell in current directory
@@ -71,6 +73,7 @@ while [[ $# -ge 1 && "$1" != "--" ]]; do
     --show-config)    MODE=show-config ;;
     --show-config-\#) MODE=show-config-commented ;;
     --show-command)   MODE=show-command ;;
+    --allow)          MODE=allow ;;
     --version)
       version
       exit 0
@@ -107,6 +110,52 @@ done
 
 log "DIR=$DIR"
 
+# Allow list. The project cfg is bash sourced here, on the host, and agents
+# write project trees: a sandbox sees its own cfg read-only, but not a
+# sibling project's it has rw, nor a fresh .sandbox.cfg dropped in a subdir
+# to shadow its parent's. So a project cfg is sourced only while its path
+# and sha256 are on the list --allow writes, outside every project (bound
+# read-only below wherever a cfg exposes it rw). An edited, moved or new cfg
+# needs a fresh --allow, as an .envrc needs `direnv allow`. The default and
+# per-user layers aren't checked: no project tree holds them.
+#
+# The cfg is read once and the same bytes are hashed and sourced, so a write
+# racing the launch can't swap in text that wasn't checked. The x sentinel
+# keeps trailing newlines, so the hash matches sha256sum of the file.
+ALLOW_DIR="$(realpath -sm -- "${XDG_DATA_HOME:-$HOME/.local/share}/sandbox")"
+ALLOWED="$ALLOW_DIR/allowed"
+cfg_text="$(cat -- "$CFG"; echo x)"
+cfg_text="${cfg_text%x}"
+cfg_hash="$(printf '%s' "$cfg_text" | sha256sum)"
+cfg_hash="${cfg_hash%% *}"
+
+if [[ "$MODE" == allow ]]; then
+  if [[ -n "${SANDBOX:-}" ]]; then
+    log "Refusing --allow inside a sandbox; allow $CFG from an unsandboxed shell" 3
+    exit 1
+  fi
+  # sha256sum's own line format: "<hash>  <path>", one line per path.
+  mkdir -p "$ALLOW_DIR"
+  tmp="$(mktemp "$ALLOWED.XXXXXX")"
+  if [[ -f "$ALLOWED" ]]; then
+    while IFS= read -r line; do
+      if [[ "${line#*  }" != "$CFG" ]]; then
+        printf '%s\n' "$line"
+      fi
+    done <"$ALLOWED" >"$tmp"
+  fi
+  printf '%s  %s\n' "$cfg_hash" "$CFG" >>"$tmp"
+  mv -- "$tmp" "$ALLOWED"
+  echo "allowed $CFG"
+  exit 0
+fi
+
+if ! grep -qFx -- "$cfg_hash  $CFG" "$ALLOWED" 2>/dev/null; then
+  log "Not allowed: $CFG is new or changed since it was last allowed." 3
+  log "Review it, then run: $(basename "$0") $(printf '%q' "$DIR") --allow" 3
+  exit 1
+fi
+
 # Config variables, sourced in layers, each appending to or overriding the
 # previous: the default policy (/etc/sandbox.cfg when present, otherwise the
 # stock default.cfg shipped with the package; SANDBOX_CFG_DEFAULT overrides
@@ -125,6 +174,7 @@ link=()
 env=( inherit )
 pre=()
 post=()
+late=()
 net=1
 seccomp=default
 slice=
@@ -147,7 +197,7 @@ fi
 
 log "SOURCE: $CFG" 6
 # shellcheck disable=SC1090
-source "$CFG"
+source <(printf '%s' "$cfg_text")
 
 # Cfg paths may contain "." or ".." segments (e.g. "$DIR/../shared"), which
 # both bwrap's mountpoint creation and the mask prefix matching below
@@ -161,8 +211,6 @@ normalize() {
     paths[i]="$(realpath -sm -- "${paths[i]}")"
   done
 }
-normalize tmpfs
-normalize mask
 
 # ro/rw/dev entries are either a single path (mounted at the same path inside)
 # or a SRC:DEST pair splitting on the first colon (host SRC appears at DEST
@@ -194,10 +242,99 @@ normalize_mounts() {
     fi
   done
 }
+
+# late hooks: eval'd once every layer is sourced, before the policy is
+# normalized and turned into bwrap arguments. A lower layer uses them to
+# derive policy from what the layers above it added (the project's rw roots,
+# say), which it can't see while it is itself being sourced; split_mount is
+# defined by now for decoding entries. Their effect shows in --show-config's
+# arrays, so the hooks themselves aren't printed.
+for cmd in "${late[@]}"; do
+  log "LATE: $cmd" 6
+  eval "$cmd"
+done
+
+normalize tmpfs
+normalize mask
 normalize_mounts ro
 normalize_mounts rw
 normalize_mounts dev
 normalize_mounts overlay
+
+# The allow list stays read-only inside whatever the layers bound rw: an rw
+# entry covering ALLOW_DIR (at its own path or relocated) gets a ro bind of
+# ALLOW_DIR on top at the matching dest, which the depth sort below mounts
+# after it. Added after the late hooks so no cfg code can drop it.
+for (( i=0; i<${#rw[@]}; i++ )); do
+  split_mount "${rw[i]}"
+  if [[ "$ALLOW_DIR" == "$src" || "$ALLOW_DIR" == "${src%/}"/* ]] && [[ -d "$ALLOW_DIR" ]]; then
+    allow_dest="$dest${ALLOW_DIR#"$src"}"
+    if [[ "$allow_dest" == "$ALLOW_DIR" ]]; then
+      ro+=( "${ALLOW_DIR//:/\\:}" )
+    else
+      ro+=( "${ALLOW_DIR//:/\\:}:${allow_dest//:/\\:}" )
+    fi
+  fi
+done
+
+# Pins. The kernel refuses to rename or remove a mountpoint, but not its
+# parents: with only a ro file bound inside an rw tree, `mv sub sub.x &&
+# mkdir sub` carries the bind away and frees the original path for new
+# content the host then sees as the protected file. So every directory
+# between a ro bind and the rw bind enclosing it is bound onto itself too,
+# making each a mountpoint that stays put. A ro bind whose closest
+# enclosing bind is ro needs none: nothing under it can be renamed. Pins
+# are shallower than the ro bind they hold, so the depth sort below mounts
+# them first.
+declare -A pin_bound=()
+pin_ro=() pin_rw_src=() pin_rw_dest=()
+for entry in "${ro[@]}"; do
+  split_mount "$entry"
+  pin_ro+=( "$dest" )
+  pin_bound[$dest]=1
+done
+for entry in "${rw[@]}"; do
+  split_mount "$entry"
+  pin_rw_src+=( "$src" )
+  pin_rw_dest+=( "$dest" )
+  pin_bound[$dest]=1
+done
+for target in "${pin_ro[@]}"; do
+  enclosing=
+  enclosing_rw=
+  for d in "${pin_ro[@]}"; do
+    if [[ "$target" == "${d%/}"/* ]] && (( ${#d} > ${#enclosing} )); then
+      enclosing="$d"
+      enclosing_rw=
+    fi
+  done
+  for j in "${!pin_rw_dest[@]}"; do
+    d="${pin_rw_dest[j]}"
+    if [[ "$target" == "${d%/}"/* ]] && (( ${#d} > ${#enclosing} )); then
+      enclosing="$d"
+      enclosing_rw="$j"
+    fi
+  done
+  if [[ -z "$enclosing_rw" ]]; then
+    continue
+  fi
+  dir="${target%/*}"
+  while [[ "$dir" == "${enclosing%/}"/* ]]; do
+    if [[ -z "${pin_bound[$dir]:-}" ]]; then
+      pin_bound[$dir]=1
+      host="${pin_rw_src[enclosing_rw]}${dir#"$enclosing"}"
+      if [[ -d "$host" ]]; then
+        log "PIN: $dir" 7
+        if [[ "$host" == "$dir" ]]; then
+          rw+=( "${dir//:/\\:}" )
+        else
+          rw+=( "${host//:/\\:}:${dir//:/\\:}" )
+        fi
+      fi
+    fi
+    dir="${dir%/*}"
+  done
+done
 
 # link targets stay literal (they may be deliberately dangling or relative);
 # only the linkpath side is normalized.
@@ -314,16 +451,40 @@ done
 # a symlink dangling *on the host* during setup: mountpoint creation
 # resolves symlinks against the real root, and creat() then returns ENOENT
 # ("Can't create file at ...").
-for mount in "${ro[@]}"; do
-  split_mount "$mount"
-	log "RO: $src -> $dest" 7
-  args+=( --ro-bind "$src" "$dest" )
+#
+# ro and rw binds go out shallowest destination first, because in bwrap a
+# later bind covers an earlier one beneath it. Sorted, a nested bind always
+# lands on top of its parent whichever array or cfg layer it came from: a
+# ro file stays read-only inside a rw project dir, and a rw dir stays
+# writable inside a ro tree. Equal depths keep the old order, ro before rw
+# and cfg order within each (sort -s).
+order=()
+for (( i=0; i<${#ro[@]}; i++ )); do
+  split_mount "${ro[i]}"
+  slashes="${dest%/}"
+  slashes="${slashes//[^\/]/}"
+  order+=( "${#slashes} ro $i" )
 done
-
-for mount in "${rw[@]}"; do
-  split_mount "$mount"
-	log "RW: $src -> $dest" 7
-  args+=( --bind "$src" "$dest" )
+for (( i=0; i<${#rw[@]}; i++ )); do
+  split_mount "${rw[i]}"
+  slashes="${dest%/}"
+  slashes="${slashes//[^\/]/}"
+  order+=( "${#slashes} rw $i" )
+done
+if (( ${#order[@]} )); then
+  mapfile -t order < <(printf '%s\n' "${order[@]}" | sort -s -n -k1,1)
+fi
+for entry in "${order[@]}"; do
+  read -r _ kind i <<<"$entry"
+  if [[ "$kind" == ro ]]; then
+    split_mount "${ro[i]}"
+	  log "RO: $src -> $dest" 7
+    args+=( --ro-bind "$src" "$dest" )
+  else
+    split_mount "${rw[i]}"
+	  log "RW: $src -> $dest" 7
+    args+=( --bind "$src" "$dest" )
+  fi
 done
 
 # Device passthrough (/dev/kvm, /dev/dri/*, ...). The ro/rw binds above are
@@ -369,13 +530,15 @@ done
 # host under a rw bind and fails the launch under a ro one. Dir-vs-file is
 # decided on the host, after translating the path through any relocating
 # ro/rw pairs so masks under a pair's dest resolve against the real source.
+# The deepest enclosing dest wins, as it does for the binds themselves.
 for mount in "${mask[@]}"; do
   hostpath="$mount"
+  matched=
   for entry in "${rw[@]}" "${ro[@]}"; do
     split_mount "$entry"
-    if [[ "$mount" == "$dest" || "$mount" == "$dest"/* ]]; then
+    if [[ "$mount" == "$dest" || "$mount" == "$dest"/* ]] && (( ${#dest} > ${#matched} )); then
       hostpath="$src${mount#"$dest"}"
-      break
+      matched="$dest"
     fi
   done
   if [[ -d "$hostpath" ]]; then

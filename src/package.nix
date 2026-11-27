@@ -50,6 +50,7 @@
   openssh,
   nix,
   devenv,
+  git,
   sandboxSrc ? ./.,
 }:
 
@@ -84,12 +85,13 @@ let
       openssh
       nix
       devenv
+      git
     ];
   };
 in
 stdenv.mkDerivation {
   pname = "sandbox";
-  version = "0.2.1";
+  version = "0.3.0";
   src = sandboxSrc;
 
   nativeBuildInputs = [ makeWrapper ];

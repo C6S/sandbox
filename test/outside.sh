@@ -58,8 +58,19 @@ trap 'rm -rf "$root"' EXIT
 # Keep the run hermetic: pin the default layer to the repo's stock policy
 # (instead of whatever /etc/sandbox.cfg the host has) and point XDG at a
 # test-owned dir so no per-user default.cfg leaks in.
-export SANDBOX_CFG_DEFAULT="$REPO/src/default.cfg"
+# The built copy, beside the wrapper under test: src/default.cfg still holds
+# the @sandboxSw@ placeholder package.nix substitutes, and a launch with it
+# fails on a relative "@sandboxSw@/bin" source.
+SANDBOX_CFG_DEFAULT="$(dirname "$(readlink -f "$SANDBOX_BIN")")/../share/sandbox/default.cfg"
+if [[ ! -f "$SANDBOX_CFG_DEFAULT" ]]; then
+  echo "no built default.cfg beside $SANDBOX_BIN" >&2
+  exit 2
+fi
+export SANDBOX_CFG_DEFAULT
 export XDG_CONFIG_HOME="$root/xdg"
+# The allow list too: fixtures are allowed into a test-owned list, never the
+# user's.
+export XDG_DATA_HOME="$root/xdg-data"
 
 # fixture <name> reads the cfg body from stdin and creates $root/<name>
 # containing it plus a copy of inside.sh. Heredocs are unquoted on purpose
@@ -69,6 +80,7 @@ fixture() {
   local dir="$root/$1"
   mkdir -p "$dir"
   cat >"$dir/.sandbox.cfg"
+  "$SANDBOX_BIN" "$dir" --allow >/dev/null
   cp "$INSIDE" "$dir/inside.sh"
   # Bake the fully-resolved policy (all layers applied) beside the cfg;
   # inside.sh prefers it over re-sourcing the project cfg, so its checks
@@ -251,6 +263,72 @@ else
   fail "ro-pairs: write leaked into the host src"
 fi
 
+## nested binds: the deeper dest wins whatever order the cfg lists them in,
+## so a ro file stays read-only inside the rw project and a rw dir stays
+## writable inside a ro tree (both listed child-first on purpose)
+mkdir -p "$root/nested-tree/cache"
+fixture nested <<EOF
+ro+=( "\$DIR/locked.nix" )
+rw+=( "\$DIR" "$root/nested-tree/cache:/opt/tree/cache" )
+ro+=( "$root/nested-tree:/opt/tree" )
+EOF
+echo locked >"$root/nested/locked.nix"
+check "nested: inside.sh passes" nested
+check "nested: ro file inside rw dir refuses writes" nested \
+  bash -c "! echo from-inside >$root/nested/locked.nix 2>/dev/null"
+check "nested: rw dir inside ro tree is writable" nested \
+  bash -c 'echo from-inside >/opt/tree/cache/probe'
+check "nested: ro tree around it refuses writes" nested \
+  bash -c '! echo from-inside >/opt/tree/probe 2>/dev/null'
+if [[ "$(cat "$root/nested/locked.nix")" == locked && \
+      "$(cat "$root/nested-tree/cache/probe" 2>/dev/null)" == from-inside && \
+      ! -e "$root/nested-tree/probe" ]]; then
+  pass "nested: host sees only the rw write"
+else
+  fail "nested: host copies wrong"
+fi
+
+## pins: the directories between a ro file and its rw root are mountpoints,
+## so renaming one away (to put a fresh copy at the original path) fails
+fixture pins <<'EOF'
+rw+=( "$DIR" )
+ro+=( "$DIR/sub/deeper/locked" )
+EOF
+mkdir -p "$root/pins/sub/deeper"
+echo locked >"$root/pins/sub/deeper/locked"
+check "pins: inside.sh passes" pins
+check "pins: parent of ro file can't be renamed" pins \
+  bash -c "! mv $root/pins/sub/deeper $root/pins/sub/moved 2>/dev/null"
+check "pins: grandparent can't be renamed" pins \
+  bash -c "! mv $root/pins/sub $root/pins/moved 2>/dev/null"
+check "pins: pinned dirs stay writable" pins \
+  bash -c "echo from-inside >$root/pins/sub/deeper/probe"
+if [[ "$(cat "$root/pins/sub/deeper/locked")" == locked && ! -e "$root/pins/moved" && \
+      "$(cat "$root/pins/sub/deeper/probe" 2>/dev/null)" == from-inside ]]; then
+  pass "pins: host tree in place"
+else
+  fail "pins: host tree changed"
+fi
+
+## late hooks: a per-user layer sees the project's rw roots and protects a
+## file under each, though it is sourced before the project cfg
+mkdir -p "$XDG_CONFIG_HOME/sandbox"
+cat >"$XDG_CONFIG_HOME/sandbox/default.cfg" <<'EOF'
+late+=( 'for r in "${rw[@]}"; do [[ ! -e "$r/protected" ]] || ro+=( "$r/protected" ); done' )
+EOF
+fixture late <<'EOF'
+rw+=( "$DIR" )
+EOF
+echo keep >"$root/late/protected"
+check "late: hook-derived ro refuses writes" late \
+  bash -c "! echo from-inside >$root/late/protected 2>/dev/null"
+if [[ "$(cat "$root/late/protected")" == keep ]]; then
+  pass "late: host copy intact"
+else
+  fail "late: host copy changed"
+fi
+rm "$XDG_CONFIG_HOME/sandbox/default.cfg"
+
 ## devices: a dev entry passes a usable device node through, where the same
 ## node behind a plain rw bind is mounted nodev and refuses to open. /dev/zero
 ## stands in for /dev/kvm — always present, world-readable, and its content is
@@ -408,6 +486,63 @@ if out="$("$SANDBOX_BIN" --show-command "$root/defaults" -- true)" \
   pass "show-command: prints bwrap invocation incl. seccomp fd"
 else
   fail "show-command: broken output"
+fi
+
+## allow list: a project cfg is sourced only as last allowed, so new, edited
+## and subdir-shadowing cfgs are refused until `--allow`
+mkdir -p "$root/unallowed"
+# shellcheck disable=SC2016 # the cfg expands $DIR itself
+echo 'rw+=( "$DIR" )' >"$root/unallowed/.sandbox.cfg"
+check_fails "allow: new cfg refused" unallowed true
+if "$SANDBOX_BIN" "$root/unallowed" --show-config >/dev/null 2>&1; then
+  fail "allow: --show-config sourced a new cfg"
+else
+  pass "allow: --show-config refuses a new cfg"
+fi
+"$SANDBOX_BIN" "$root/unallowed" --allow >/dev/null
+check "allow: allowed cfg launches" unallowed true
+echo '# edited' >>"$root/unallowed/.sandbox.cfg"
+check_fails "allow: edited cfg refused" unallowed true
+"$SANDBOX_BIN" "$root/unallowed" --allow >/dev/null
+if [[ "$(grep -c "  $root/unallowed/.sandbox.cfg\$" "$XDG_DATA_HOME/sandbox/allowed")" == 1 ]]; then
+  pass "allow: re-allow replaces the path's line"
+else
+  fail "allow: re-allow left duplicate lines"
+fi
+if (cd "$XDG_DATA_HOME/sandbox" && sha256sum --quiet -c allowed); then
+  pass "allow: list verifies with sha256sum -c"
+else
+  fail "allow: list does not match sha256sum"
+fi
+mkdir -p "$root/unallowed/sub"
+echo 'rw+=( / )' >"$root/unallowed/sub/.sandbox.cfg"
+check_fails "allow: shadowing subdir cfg refused" unallowed/sub true
+
+# Inside, --allow must refuse on its own account (not because the list is
+# unreachable): $SANDBOX is set there.
+sandbox_store="$(readlink -f "$SANDBOX_BIN")"
+if out="$(in_sandbox defaults "$sandbox_store" "$root/defaults" --allow 2>&1)"; then
+  fail "allow: --allow ran inside a sandbox"
+elif [[ "$out" == *"inside a sandbox"* ]]; then
+  pass "allow: --allow refused inside a sandbox"
+else
+  fail "allow: --allow failed inside for another reason"
+  printf '%s\n' "$out" | sed 's/^/      /'
+fi
+
+# A cfg exposing the list's directory rw still gets the list read-only.
+fixture allow-dir-rw <<EOF
+rw+=( "\$DIR" "$XDG_DATA_HOME" )
+EOF
+before="$(cat "$XDG_DATA_HOME/sandbox/allowed")"
+check "allow-dir-rw: rest of XDG_DATA_HOME writable" allow-dir-rw \
+  bash -c "echo from-inside >$XDG_DATA_HOME/probe"
+check "allow-dir-rw: allow list refuses writes" allow-dir-rw \
+  bash -c "! echo forged >>$XDG_DATA_HOME/sandbox/allowed 2>/dev/null && ! touch $XDG_DATA_HOME/sandbox/new 2>/dev/null"
+if [[ "$(cat "$XDG_DATA_HOME/sandbox/allowed")" == "$before" ]]; then
+  pass "allow-dir-rw: host list intact"
+else
+  fail "allow-dir-rw: host list changed"
 fi
 
 ## unknown seccomp filter name refuses to launch

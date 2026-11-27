@@ -30,6 +30,7 @@ sandbox                      open $SHELL sandboxed in the current directory
 sandbox subdir/              open $SHELL sandboxed in subdir
 sandbox -- cmd args          run cmd sandboxed in the current directory
 sandbox subdir/ -- cmd args  run cmd sandboxed in subdir
+sandbox --allow              allow the closest .sandbox.cfg as it is now
 ```
 
 `LOGLEVEL` (syslog-style: 3=err, 6=info, 7=debug; default 3) controls wrapper
@@ -60,6 +61,19 @@ ro+=( "$HOME/.config/git" )
 env+=( HISTFILE "$DIR/.zsh_history" )
 ```
 
+A project cfg runs as bash on the host, before the sandbox exists, and
+sandboxed agents write project trees: a sibling project's cfg they have rw,
+or a new `.sandbox.cfg` in a subdirectory that shadows its parent's. So the
+wrapper sources a project cfg only while its path and sha256 are on the
+allow list, `$XDG_DATA_HOME/sandbox/allowed` (`~/.local/share/…` when
+unset), in `sha256sum` format. `sandbox [dir] --allow` adds the closest cfg
+as it is now, the way `direnv allow` admits an `.envrc`. A new, edited or
+moved cfg is refused, with every mode including `--show-config`, until it is
+reviewed and allowed again. `--allow` refuses to run inside a sandbox, and
+the list's directory is bound read-only wherever a cfg exposes it rw. The
+default and per-user layers are not checked, because no project tree holds
+them.
+
 Configs are sourced in layers, each appending to or overriding the last:
 
 1. the default policy — `/etc/sandbox.cfg` when present, otherwise the stock
@@ -86,6 +100,7 @@ The table shows the stock defaults.
 | `slice` | empty | systemd slice the sandbox is placed under. Limits on the slice cap all sandboxes in it together. |
 | `limit` | empty | Flat pairs of `Property value` (`MemoryMax 4G`, `CPUQuota 200%`, …) capping this sandbox alone. |
 | `pre` / `post` | empty | Commands eval'd outside the sandbox, before launch / after exit. |
+| `late` | empty | Commands eval'd once every cfg layer is sourced, before the arrays become mounts — for a lower layer to derive policy from what higher layers added (e.g. protect files under every `rw` root). |
 
 An `ro`/`rw`/`dev` entry is normally a single path, mounted at the same path
 inside. Writing it as `src:dest` (split on the first colon) mounts host
@@ -94,6 +109,20 @@ inside. Writing it as `src:dest` (split on the first colon) mounts host
 the same `a:b` syntax, always as pairs. A literal colon in a path is
 escaped as `\:`; the entry must be quoted, since bash strips the
 backslash from unquoted words before the cfg value is seen.
+
+`ro` and `rw` binds nest: they are mounted shallowest `dest` first, so the
+deeper one wins wherever it is listed, in whichever array or cfg layer.
+`ro+=( "$DIR/devenv.nix" )` keeps that file read-only inside a `rw` project
+dir, and a `rw` dir inside a `ro` tree stays writable. Binds at the same
+depth keep their order, `ro` before `rw`.
+
+The kernel won't rename or remove a mountpoint, but it will rename the
+mountpoint's parent directories. A `ro` file inside a `rw` tree could
+otherwise be carried off with its parent (`mv sub sub.x && mkdir sub`),
+leaving the original path free for new content. So the wrapper also binds
+every directory between a `ro` bind and its enclosing `rw` bind onto itself
+("pins", visible in `--show-config`'s `rw`). They stay writable but can't be
+moved.
 
 `dev` exists because bubblewrap mounts an unprivileged bind `nodev`: a device
 node listed in `ro`/`rw` shows up inside, but opening it returns `EACCES`.
